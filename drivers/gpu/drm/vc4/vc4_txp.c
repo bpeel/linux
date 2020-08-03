@@ -20,6 +20,7 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_writeback.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 
 #include "vc4_drv.h"
 #include "vc4_regs.h"
@@ -265,7 +266,7 @@ static void vc4_txp_connector_atomic_commit(struct drm_connector *conn,
 					struct drm_connector_state *conn_state)
 {
 	struct vc4_txp *txp = connector_to_vc4_txp(conn);
-	struct drm_gem_cma_object *gem;
+	struct drm_gem_object *gem;
 	struct drm_display_mode *mode;
 	struct drm_framebuffer *fb;
 	u32 ctrl;
@@ -292,8 +293,8 @@ static void vc4_txp_connector_atomic_commit(struct drm_connector *conn,
 	if (fb->format->has_alpha)
 		ctrl |= TXP_ALPHA_ENABLE;
 
-	gem = drm_fb_cma_get_gem_obj(fb, 0);
-	TXP_WRITE(TXP_DST_PTR, gem->paddr + fb->offsets[0]);
+	gem = drm_gem_fb_get_obj(fb, 0);
+	TXP_WRITE(TXP_DST_PTR, vc4_bo_get_paddr(gem) + fb->offsets[0]);
 	TXP_WRITE(TXP_DST_PITCH, fb->pitches[0]);
 	TXP_WRITE(TXP_DIM,
 		  VC4_SET_FIELD(mode->hdisplay, TXP_WIDTH) |

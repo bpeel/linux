@@ -776,7 +776,7 @@ vc4_handle_branch_target(struct vc4_shader_validation_state *validation_state)
 }
 
 struct vc4_validated_shader_info *
-vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
+vc4_validate_shader(struct drm_gem_object *shader_obj)
 {
 	bool found_shader_end = false;
 	int shader_end_ip = 0;
@@ -786,8 +786,8 @@ vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
 	struct vc4_shader_validation_state validation_state;
 
 	memset(&validation_state, 0, sizeof(validation_state));
-	validation_state.shader = shader_obj->vaddr;
-	validation_state.max_ip = shader_obj->base.size / sizeof(uint64_t);
+	validation_state.shader = vc4_bo_get_vaddr(shader_obj);
+	validation_state.max_ip = shader_obj->size / sizeof(uint64_t);
 
 	reset_validation_state(&validation_state);
 
@@ -900,7 +900,7 @@ vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
 	if (ip == validation_state.max_ip) {
 		DRM_DEBUG("shader failed to terminate before "
 			  "shader BO end at %zd\n",
-			  shader_obj->base.size);
+			  shader_obj->size);
 		goto fail;
 	}
 

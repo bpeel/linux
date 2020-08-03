@@ -521,7 +521,8 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 			   struct drm_plane_state *state)
 {
 	struct drm_framebuffer *fb = state->fb;
-	struct drm_gem_cma_object *bo = drm_fb_cma_get_gem_obj(fb, 0);
+	struct drm_gem_object *gem_obj = drm_gem_fb_get_obj(fb, 0);
+	dma_addr_t paddr = vc4_bo_get_paddr(gem_obj);
 	const struct drm_format_info *drm_fmt = fb->format;
 	const struct vc_image_format *vc_fmt =
 					vc4_get_vc_image_fmt(drm_fmt->format);
@@ -545,7 +546,7 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 					state->normalized_zpos : -127;
 	mb->plane.num_planes = num_planes;
 	mb->plane.is_vu = vc_fmt->is_vu;
-	mb->plane.planes[0] = bo->paddr + fb->offsets[0];
+	mb->plane.planes[0] = paddr + fb->offsets[0];
 
 	rotation = drm_rotation_simplify(state->rotation,
 					 DRM_MODE_ROTATE_0 |
@@ -565,9 +566,9 @@ static int vc4_plane_to_mb(struct drm_plane *plane,
 		/* Makes assumptions on the stride for the chroma planes as we
 		 * can't easily plumb in non-standard pitches.
 		 */
-		mb->plane.planes[1] = bo->paddr + fb->offsets[1];
+		mb->plane.planes[1] = paddr + fb->offsets[1];
 		if (num_planes > 2)
-			mb->plane.planes[2] = bo->paddr + fb->offsets[2];
+			mb->plane.planes[2] = paddr + fb->offsets[2];
 		else
 			mb->plane.planes[2] = 0;
 

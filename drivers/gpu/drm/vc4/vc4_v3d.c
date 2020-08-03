@@ -248,6 +248,7 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 	while (true) {
 		struct vc4_bo *bo = vc4_bo_create(&vc4->base, size, true,
 						  VC4_BO_TYPE_BIN);
+		dma_addr_t paddr = vc4_bo_get_paddr(&bo->base);
 
 		if (IS_ERR(bo)) {
 			ret = PTR_ERR(bo);
@@ -261,8 +262,8 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 		}
 
 		/* Check if this BO won't trigger the addressing bug. */
-		if ((bo->base.paddr & 0xf0000000) ==
-		    ((bo->base.paddr + bo->base.base.size - 1) & 0xf0000000)) {
+		if ((paddr & 0xf0000000) ==
+		    ((paddr + bo->base.size - 1) & 0xf0000000)) {
 			vc4->bin_bo = bo;
 
 			/* Set up for allocating 512KB chunks of
@@ -285,7 +286,7 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 			vc4->bin_alloc_used = 0;
 			vc4->bin_alloc_overflow = 0;
 			WARN_ON_ONCE(sizeof(vc4->bin_alloc_used) * 8 !=
-				     bo->base.base.size / vc4->bin_alloc_size);
+				     bo->base.size / vc4->bin_alloc_size);
 
 			kref_init(&vc4->bin_bo_kref);
 
@@ -308,7 +309,7 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 						    struct vc4_bo, unref_head);
 
 		list_del(&bo->unref_head);
-		drm_gem_object_put(&bo->base.base);
+		drm_gem_object_put(&bo->base);
 	}
 
 	return ret;
@@ -344,7 +345,7 @@ static void bin_bo_release(struct kref *ref)
 	if (WARN_ON_ONCE(!vc4->bin_bo))
 		return;
 
-	drm_gem_object_put(&vc4->bin_bo->base.base);
+	drm_gem_object_put(&vc4->bin_bo->base);
 	vc4->bin_bo = NULL;
 }
 

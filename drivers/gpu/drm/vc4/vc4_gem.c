@@ -123,8 +123,8 @@ vc4_get_hang_state_ioctl(struct drm_device *dev, void *data,
 			goto err_delete_handle;
 		}
 		bo_state[i].handle = handle;
-		bo_state[i].paddr = vc4_bo->base.paddr;
-		bo_state[i].size = vc4_bo->base.base.size;
+		bo_state[i].paddr = vc4_bo_get_paddr(&vc4_bo->base);
+		bo_state[i].size = vc4_bo->base.size;
 	}
 
 	if (copy_to_user(u64_to_user_ptr(get_state->bo),
@@ -196,7 +196,7 @@ vc4_save_hang_state(struct drm_device *dev)
 			continue;
 
 		for (j = 0; j < exec[i]->bo_count; j++) {
-			bo = to_vc4_bo(&exec[i]->bo[j]->base);
+			bo = to_vc4_bo(exec[i]->bo[j]);
 
 			/* Retain BOs just in case they were marked purgeable.
 			 * This prevents the BO from being purged before
@@ -204,16 +204,16 @@ vc4_save_hang_state(struct drm_device *dev)
 			 */
 			WARN_ON(!refcount_read(&bo->usecnt));
 			refcount_inc(&bo->usecnt);
-			drm_gem_object_get(&exec[i]->bo[j]->base);
-			kernel_state->bo[k++] = &exec[i]->bo[j]->base;
+			drm_gem_object_get(exec[i]->bo[j]);
+			kernel_state->bo[k++] = exec[i]->bo[j];
 		}
 
 		list_for_each_entry(bo, &exec[i]->unref_list, unref_head) {
 			/* No need to retain BOs coming from the ->unref_list
 			 * because they are naturally unpurgeable.
 			 */
-			drm_gem_object_get(&bo->base.base);
-			kernel_state->bo[k++] = &bo->base.base;
+			drm_gem_object_get(&bo->base);
+			kernel_state->bo[k++] = &bo->base;
 		}
 	}
 
@@ -540,10 +540,10 @@ vc4_update_bo_seqnos(struct vc4_exec_info *exec, uint64_t seqno)
 	unsigned i;
 
 	for (i = 0; i < exec->bo_count; i++) {
-		bo = to_vc4_bo(&exec->bo[i]->base);
+		bo = to_vc4_bo(exec->bo[i]);
 		bo->seqno = seqno;
 
-		dma_resv_add_shared_fence(bo->base.base.resv, exec->fence);
+		dma_resv_add_shared_fence(bo->base.resv, exec->fence);
 	}
 
 	list_for_each_entry(bo, &exec->unref_list, unref_head) {
@@ -551,10 +551,10 @@ vc4_update_bo_seqnos(struct vc4_exec_info *exec, uint64_t seqno)
 	}
 
 	for (i = 0; i < exec->rcl_write_bo_count; i++) {
-		bo = to_vc4_bo(&exec->rcl_write_bo[i]->base);
+		bo = to_vc4_bo(exec->rcl_write_bo[i]);
 		bo->write_seqno = seqno;
 
-		dma_resv_add_excl_fence(bo->base.base.resv, exec->fence);
+		dma_resv_add_excl_fence(bo->base.resv, exec->fence);
 	}
 }
 
@@ -566,7 +566,7 @@ vc4_unlock_bo_reservations(struct drm_device *dev,
 	int i;
 
 	for (i = 0; i < exec->bo_count; i++) {
-		struct drm_gem_object *bo = &exec->bo[i]->base;
+		struct drm_gem_object *bo = exec->bo[i];
 
 		ww_mutex_unlock(&bo->resv->lock);
 	}
@@ -594,7 +594,7 @@ vc4_lock_bo_reservations(struct drm_device *dev,
 
 retry:
 	if (contended_lock != -1) {
-		bo = &exec->bo[contended_lock]->base;
+		bo = exec->bo[contended_lock];
 		ret = ww_mutex_lock_slow_interruptible(&bo->resv->lock,
 						       acquire_ctx);
 		if (ret) {
@@ -607,19 +607,19 @@ retry:
 		if (i == contended_lock)
 			continue;
 
-		bo = &exec->bo[i]->base;
+		bo = exec->bo[i];
 
 		ret = ww_mutex_lock_interruptible(&bo->resv->lock, acquire_ctx);
 		if (ret) {
 			int j;
 
 			for (j = 0; j < i; j++) {
-				bo = &exec->bo[j]->base;
+				bo = exec->bo[j];
 				ww_mutex_unlock(&bo->resv->lock);
 			}
 
 			if (contended_lock != -1 && contended_lock >= i) {
-				bo = &exec->bo[contended_lock]->base;
+				bo = exec->bo[contended_lock];
 
 				ww_mutex_unlock(&bo->resv->lock);
 			}
@@ -640,7 +640,7 @@ retry:
 	 * before we commit the CL to the hardware.
 	 */
 	for (i = 0; i < exec->bo_count; i++) {
-		bo = &exec->bo[i]->base;
+		bo = exec->bo[i];
 
 		ret = dma_resv_reserve_shared(bo->resv, 1);
 		if (ret) {
@@ -745,7 +745,7 @@ vc4_cl_lookup_bos(struct drm_device *dev,
 	}
 
 	exec->bo = kvmalloc_array(exec->bo_count,
-				    sizeof(struct drm_gem_cma_object *),
+				    sizeof(struct drm_gem_object *),
 				    GFP_KERNEL | __GFP_ZERO);
 	if (!exec->bo) {
 		DRM_ERROR("Failed to allocate validated BO pointers\n");
@@ -778,7 +778,7 @@ vc4_cl_lookup_bos(struct drm_device *dev,
 		}
 
 		drm_gem_object_get(bo);
-		exec->bo[i] = (struct drm_gem_cma_object *)bo;
+		exec->bo[i] = (struct drm_gem_object *)bo;
 	}
 	spin_unlock(&file_priv->table_lock);
 
@@ -786,7 +786,7 @@ vc4_cl_lookup_bos(struct drm_device *dev,
 		goto fail_put_bo;
 
 	for (i = 0; i < exec->bo_count; i++) {
-		ret = vc4_bo_inc_usecnt(to_vc4_bo(&exec->bo[i]->base));
+		ret = vc4_bo_inc_usecnt(to_vc4_bo(exec->bo[i]));
 		if (ret)
 			goto fail_dec_usecnt;
 	}
@@ -804,12 +804,12 @@ fail_dec_usecnt:
 	 * step.
 	 */
 	for (i-- ; i >= 0; i--)
-		vc4_bo_dec_usecnt(to_vc4_bo(&exec->bo[i]->base));
+		vc4_bo_dec_usecnt(to_vc4_bo(exec->bo[i]));
 
 fail_put_bo:
 	/* Release any reference to acquired objects. */
 	for (i = 0; i < exec->bo_count && exec->bo[i]; i++)
-		drm_gem_object_put_unlocked(&exec->bo[i]->base);
+		drm_gem_object_put_unlocked(exec->bo[i]);
 
 fail:
 	kvfree(handles);
@@ -834,6 +834,8 @@ vc4_get_bcl(struct drm_device *dev, struct vc4_exec_info *exec)
 	uint32_t temp_size = exec_size + (sizeof(struct vc4_shader_state) *
 					  args->shader_rec_count);
 	struct vc4_bo *bo;
+	void *vaddr;
+	dma_addr_t paddr;
 
 	if (shader_rec_offset < args->bin_cl_size ||
 	    uniforms_offset < shader_rec_offset ||
@@ -895,23 +897,26 @@ vc4_get_bcl(struct drm_device *dev, struct vc4_exec_info *exec)
 	}
 	exec->exec_bo = &bo->base;
 
-	list_add_tail(&to_vc4_bo(&exec->exec_bo->base)->unref_head,
+	vaddr = vc4_bo_get_vaddr(&bo->base);
+	paddr = vc4_bo_get_paddr(&bo->base);
+
+	list_add_tail(&to_vc4_bo(exec->exec_bo)->unref_head,
 		      &exec->unref_list);
 
-	exec->ct0ca = exec->exec_bo->paddr + bin_offset;
+	exec->ct0ca = paddr + bin_offset;
 
 	exec->bin_u = bin;
 
-	exec->shader_rec_v = exec->exec_bo->vaddr + shader_rec_offset;
-	exec->shader_rec_p = exec->exec_bo->paddr + shader_rec_offset;
+	exec->shader_rec_v = vaddr + shader_rec_offset;
+	exec->shader_rec_p = paddr + shader_rec_offset;
 	exec->shader_rec_size = args->shader_rec_size;
 
-	exec->uniforms_v = exec->exec_bo->vaddr + uniforms_offset;
-	exec->uniforms_p = exec->exec_bo->paddr + uniforms_offset;
+	exec->uniforms_v = vaddr + uniforms_offset;
+	exec->uniforms_p = paddr + uniforms_offset;
 	exec->uniforms_size = args->uniforms_size;
 
 	ret = vc4_validate_bin_cl(dev,
-				  exec->exec_bo->vaddr + bin_offset,
+				  vaddr + bin_offset,
 				  bin,
 				  exec);
 	if (ret)
@@ -955,10 +960,10 @@ vc4_complete_exec(struct drm_device *dev, struct vc4_exec_info *exec)
 
 	if (exec->bo) {
 		for (i = 0; i < exec->bo_count; i++) {
-			struct vc4_bo *bo = to_vc4_bo(&exec->bo[i]->base);
+			struct vc4_bo *bo = to_vc4_bo(exec->bo[i]);
 
 			vc4_bo_dec_usecnt(bo);
-			drm_gem_object_put_unlocked(&exec->bo[i]->base);
+			drm_gem_object_put_unlocked(exec->bo[i]);
 		}
 		kvfree(exec->bo);
 	}
@@ -967,7 +972,7 @@ vc4_complete_exec(struct drm_device *dev, struct vc4_exec_info *exec)
 		struct vc4_bo *bo = list_first_entry(&exec->unref_list,
 						     struct vc4_bo, unref_head);
 		list_del(&bo->unref_head);
-		drm_gem_object_put_unlocked(&bo->base.base);
+		drm_gem_object_put_unlocked(&bo->base);
 	}
 
 	/* Free up the allocation of any bin slots we used. */
@@ -1302,7 +1307,7 @@ vc4_gem_destroy(struct drm_device *dev)
 	 * the overflow allocation registers.  Now free the object.
 	 */
 	if (vc4->bin_bo) {
-		drm_gem_object_put_unlocked(&vc4->bin_bo->base.base);
+		drm_gem_object_put_unlocked(&vc4->bin_bo->base);
 		vc4->bin_bo = NULL;
 	}
 

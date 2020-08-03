@@ -35,6 +35,7 @@
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_vblank.h>
+#include <drm/drm_ioctl.h>
 
 #include "uapi/drm/vc4_drm.h"
 
@@ -204,10 +205,10 @@ static struct drm_driver vc4_drm_driver = {
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_export = vc4_prime_export,
-	.gem_prime_get_sg_table	= drm_gem_cma_prime_get_sg_table,
+	.gem_prime_get_sg_table	= vc4_prime_get_sg_table,
 	.gem_prime_import_sg_table = vc4_prime_import_sg_table,
 	.gem_prime_vmap = vc4_prime_vmap,
-	.gem_prime_vunmap = drm_gem_cma_prime_vunmap,
+	.gem_prime_vunmap = vc4_prime_vunmap,
 	.gem_prime_mmap = vc4_prime_mmap,
 
 	.dumb_create = vc4_dumb_create,
@@ -298,9 +299,13 @@ static int vc4_drm_bind(struct device *dev)
 
 	mutex_init(&vc4->bin_bo_lock);
 
-	ret = vc4_bo_cache_init(drm);
+	ret = vc4_bo_labels_init(drm);
 	if (ret)
 		goto dev_put;
+
+	ret = vc4_bo_cma_pool_init(vc4);
+	if (ret)
+		goto labels_destroy;
 
 	drm_mode_config_init(drm);
 
@@ -335,7 +340,9 @@ unbind_all:
 gem_destroy:
 	vc4_gem_destroy(drm);
 	drm_mode_config_cleanup(drm);
-	vc4_bo_cache_destroy(drm);
+	vc4_bo_cma_pool_destroy(vc4);
+labels_destroy:
+	vc4_bo_labels_destroy(drm);
 dev_put:
 	drm_dev_put(drm);
 	return ret;
@@ -345,6 +352,8 @@ static void vc4_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
+
+	vc4_bo_cma_pool_destroy(vc4);
 
 	drm_dev_unregister(drm);
 

@@ -63,6 +63,7 @@ vc4_overflow_mem_work(struct work_struct *work)
 	int bin_bo_slot;
 	struct vc4_exec_info *exec;
 	unsigned long irqflags;
+	dma_addr_t paddr;
 
 	mutex_lock(&vc4->bin_bo_lock);
 
@@ -100,8 +101,10 @@ vc4_overflow_mem_work(struct work_struct *work)
 	}
 	vc4->bin_alloc_overflow = BIT(bin_bo_slot);
 
-	V3D_WRITE(V3D_BPOA, bo->base.paddr + bin_bo_slot * vc4->bin_alloc_size);
-	V3D_WRITE(V3D_BPOS, bo->base.base.size);
+	paddr = vc4_bo_get_paddr(&bo->base);
+
+	V3D_WRITE(V3D_BPOA, paddr + bin_bo_slot * vc4->bin_alloc_size);
+	V3D_WRITE(V3D_BPOS, bo->base.size);
 	V3D_WRITE(V3D_INTCTL, V3D_INT_OUTOMEM);
 	V3D_WRITE(V3D_INTENA, V3D_INT_OUTOMEM);
 	spin_unlock_irqrestore(&vc4->job_lock, irqflags);

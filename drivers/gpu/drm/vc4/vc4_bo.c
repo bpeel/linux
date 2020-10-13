@@ -657,6 +657,46 @@ void vc4_free_object(struct drm_gem_object *gem_bo)
 	vc4_bo_destroy(bo);
 }
 
+static void vc4_bo_try_compact(struct vc4_bo *bo)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	size_t prev_address;
+
+	/* This is called from dec_usecnt with the madv_lock as the
+	 * last decrement, so we know that the buffer isn’t paged out
+	 * or purged.
+	 */
+
+	if (is_unmovable_buffer(vc4, bo))
+		return;
+
+	mutex_lock(&vc4->bo_lock);
+
+	if (bo->offset_buffers_head.prev == &vc4->cma_pool.offset_buffers) {
+		prev_address = 0;
+	} else {
+		struct vc4_bo *prev_buffer =
+			container_of(bo->offset_buffers_head.prev,
+				     struct vc4_bo,
+				     offset_buffers_head);
+		prev_address = (prev_buffer->offset +
+				prev_buffer->base.size);
+	}
+
+	if (prev_address < bo->offset) {
+		/* Invalidate any user-space mappings */
+		drm_vma_node_unmap(&bo->base.vma_node,
+				   bo->base.dev->anon_inode->i_mapping);
+
+		memmove(vc4->cma_pool.vaddr + prev_address,
+			vc4->cma_pool.vaddr + bo->offset,
+			bo->base.size);
+		bo->offset = prev_address;
+	}
+
+	mutex_unlock(&vc4->bo_lock);
+}
+
 int vc4_bo_inc_usecnt(struct vc4_bo *bo)
 {
 	int ret;
@@ -706,9 +746,11 @@ void vc4_bo_dec_usecnt(struct vc4_bo *bo)
 		return;
 
 	mutex_lock(&bo->madv_lock);
-	if (refcount_dec_and_test(&bo->usecnt) &&
-	    bo->madv == VC4_MADV_DONTNEED)
-		vc4_bo_add_to_purgeable_pool(bo);
+	if (refcount_dec_and_test(&bo->usecnt)) {
+		if (bo->madv == VC4_MADV_DONTNEED)
+			vc4_bo_add_to_purgeable_pool(bo);
+		vc4_bo_try_compact(bo);
+	}
 	mutex_unlock(&bo->madv_lock);
 }
 

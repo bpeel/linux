@@ -325,6 +325,22 @@ static bool page_out_buffer(struct vc4_bo *buf)
 	return true;
 }
 
+static bool is_unmovable_buffer(struct vc4_dev *vc4,
+				struct vc4_bo *bo)
+{
+	/* Don’t page out the binning buffer */
+	if (bo == vc4->bin_bo)
+		return true;
+
+	/* Don’t page out the dumb framebuffer */
+	if (vc4->dev->fb_helper &&
+	    vc4->dev->fb_helper->buffer &&
+	    &bo->base == vc4->dev->fb_helper->buffer->gem)
+		return true;
+
+	return false;
+}
+
 static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 					   size_t size,
 					   size_t *offset_out,
@@ -351,12 +367,10 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 		if (refcount_read(&buffer->usecnt))
 			continue;
 
-		/* Don’t page out the binning buffer */
-		if (buffer == vc4->bin_bo)
-			continue;
-
-		/* Don’t page out the dumb framebuffer */
-		if (&buffer->base == fb_buf)
+		/* Don’t page out special buffers used internally by
+		 * the driver
+		 */
+		if (is_unmovable_buffer(vc4, buffer))
 			continue;
 
 		if (buffer->offset_buffers_head.prev ==

@@ -17,6 +17,7 @@
  */
 
 #include <linux/dma-buf.h>
+#include <linux/dmaengine.h>
 #include <drm/drm_fb_helper.h>
 
 #include "vc4_drv.h"
@@ -657,6 +658,53 @@ void vc4_free_object(struct drm_gem_object *gem_bo)
 	vc4_bo_destroy(bo);
 }
 
+static bool prep_cma_pool_dma_memcpy(struct vc4_dev *vc4,
+				     size_t dst_address,
+				     size_t src_address,
+				     size_t size)
+{
+	struct dma_chan *chan = vc4->cma_pool.dma_chan;
+	struct dma_async_tx_descriptor *tx;
+	dma_cookie_t cookie;
+	int ret;
+
+	if (chan == NULL)
+		return false;
+
+	/* The DMA memcpy (probably?) won’t work if the dest and src
+	 * overlap.
+	 */
+	if (dst_address + size > src_address &&
+	    src_address + size > dst_address)
+		return false;
+
+	tx = chan->device->device_prep_dma_memcpy(chan,
+						  vc4->cma_pool.paddr +
+						  dst_address,
+						  vc4->cma_pool.paddr +
+						  src_address,
+						  size,
+						  0 /* flags */);
+	if (!tx) {
+		DRM_ERROR("Failed to set up DMA memcpy for the CMA pool\n");
+		return false;
+	}
+
+	cookie = tx->tx_submit(tx);
+	ret = dma_submit_error(cookie);
+	if (ret) {
+		DRM_ERROR("Failed to submit DMA: %d\n", ret);
+		return false;
+	}
+	ret = dma_sync_wait(chan, cookie);
+	if (ret) {
+		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
+		return false;
+	}
+
+	return true;
+}
+
 static void vc4_bo_try_compact(struct vc4_bo *bo)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
@@ -688,9 +736,15 @@ static void vc4_bo_try_compact(struct vc4_bo *bo)
 		drm_vma_node_unmap(&bo->base.vma_node,
 				   bo->base.dev->anon_inode->i_mapping);
 
-		memmove(vc4->cma_pool.vaddr + prev_address,
-			vc4->cma_pool.vaddr + bo->offset,
-			bo->base.size);
+		if (!prep_cma_pool_dma_memcpy(vc4,
+					      prev_address,
+					      bo->offset,
+					      bo->base.size)) {
+			memmove(vc4->cma_pool.vaddr + prev_address,
+				vc4->cma_pool.vaddr + bo->offset,
+				bo->base.size);
+		}
+
 		bo->offset = prev_address;
 	}
 
@@ -1209,6 +1263,8 @@ int vc4_get_tiling_ioctl(struct drm_device *dev, void *data,
 
 int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 {
+	dma_cap_mask_t dma_mask;
+
 	vc4->cma_pool.vaddr = dma_alloc_wc(vc4->dev->dev,
 					   VC4_CMA_POOL_SIZE,
 					   &vc4->cma_pool.paddr,
@@ -1221,6 +1277,15 @@ int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 	INIT_LIST_HEAD(&vc4->cma_pool.mru_buffers);
 	INIT_LIST_HEAD(&vc4->cma_pool.offset_buffers);
 
+	dma_cap_zero(dma_mask);
+	dma_cap_set(DMA_MEMCPY, dma_mask);
+	vc4->cma_pool.dma_chan = dma_request_chan_by_mask(&dma_mask);
+
+	if (IS_ERR(vc4->cma_pool.dma_chan)) {
+		DRM_ERROR("Failed to get dma_chan\n");
+		vc4->cma_pool.dma_chan = NULL;
+	}
+
 	return 0;
 }
 
@@ -1230,6 +1295,9 @@ void vc4_bo_cma_pool_destroy(struct vc4_dev *vc4)
 		    VC4_CMA_POOL_SIZE,
 		    vc4->cma_pool.vaddr,
 		    vc4->cma_pool.paddr);
+
+	if (vc4->cma_pool.dma_chan)
+		dma_release_channel(vc4->cma_pool.dma_chan);
 }
 
 int vc4_bo_labels_init(struct drm_device *dev)

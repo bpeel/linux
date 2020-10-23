@@ -103,6 +103,8 @@ struct vc4_dev {
 		 * offset.
 		 */
 		struct list_head offset_buffers;
+
+		struct dma_chan *dma_chan;
 	} cma_pool;
 
 	u32 num_labels;

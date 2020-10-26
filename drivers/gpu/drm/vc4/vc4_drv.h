@@ -72,6 +72,15 @@ struct vc4_perfmon {
 	u64 counters[0];
 };
 
+/* Entry in vc4_dev::offset_nodes */
+struct vc4_offset_node {
+	/* Linked-list node */
+	struct list_head head;
+
+	size_t offset;
+	size_t size;
+};
+
 struct vc4_dev {
 	struct drm_device *dev;
 
@@ -99,10 +108,10 @@ struct vc4_dev {
 		 * were last used (most-recent first).
 		 */
 		struct list_head mru_buffers;
-		/* Buffers that are in the pool, in the order of their
+		/* List of vc4_offset_node’s, in the order of their
 		 * offset.
 		 */
-		struct list_head offset_buffers;
+		struct list_head offset_nodes;
 
 		struct dma_chan *dma_chan;
 	} cma_pool;
@@ -264,15 +273,10 @@ struct vc4_bo {
 	/* Link within cma_pool.mru_buffers */
 	struct list_head mru_buffers_head;
 	/* Link within cma_pool.offset_buffers */
-	struct list_head offset_buffers_head;
+	struct vc4_offset_node offset_node;
 
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
-
-	/* Offset within the CMA bool buffer when the buffer is paged
-	 * in.
-	 */
-	size_t offset;
 
 	/* Pointer to a copy of the data in vmalloc’d memory when the
 	 * buffer is paged out.

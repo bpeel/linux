@@ -165,7 +165,7 @@ static void vc4_bo_remove_from_pool(struct vc4_bo *bo)
 		vfree(bo->buffer_copy);
 	} else {
 		list_del(&bo->mru_buffers_head);
-		list_del(&bo->offset_buffers_head);
+		list_del(&bo->offset_node.head);
 	}
 }
 
@@ -318,7 +318,7 @@ static bool page_out_buffer(struct vc4_bo *buf)
 	       buf->base.size);
 
 	list_del(&buf->mru_buffers_head);
-	list_del(&buf->offset_buffers_head);
+	list_del(&buf->offset_node.head);
 
 	/* Invalidate any user-space mappings */
 	drm_vma_node_unmap(&obj->vma_node, dev->anon_inode->i_mapping);
@@ -374,30 +374,30 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 		if (is_unmovable_buffer(vc4, buffer))
 			continue;
 
-		if (buffer->offset_buffers_head.prev ==
-		    &vc4->cma_pool.offset_buffers) {
-			prev = &vc4->cma_pool.offset_buffers;
+		if (buffer->offset_node.head.prev ==
+		    &vc4->cma_pool.offset_nodes) {
+			prev = &vc4->cma_pool.offset_nodes;
 			offset = 0;
 		} else {
-			struct vc4_bo *prev_buffer =
-				container_of(buffer->offset_buffers_head.prev,
-					     struct vc4_bo,
-					     offset_buffers_head);
-			offset = prev_buffer->offset + prev_buffer->base.size;
-			prev = &prev_buffer->offset_buffers_head;
+			struct vc4_offset_node *prev_node =
+				container_of(buffer->offset_node.head.prev,
+					     struct vc4_offset_node,
+					     head);
+			offset = prev_node->offset + prev_node->size;
+			prev = &prev_node->head;
 		}
 
 		if (!page_out_buffer(buffer))
 			continue;
 
-		if (prev->next == &vc4->cma_pool.offset_buffers) {
+		if (prev->next == &vc4->cma_pool.offset_nodes) {
 			next_offset = VC4_CMA_POOL_SIZE;
 		} else {
-			struct vc4_bo *next_buffer =
+			struct vc4_offset_node *next_node =
 				container_of(prev->next,
-					     struct vc4_bo,
-					     offset_buffers_head);
-			next_offset = next_buffer->offset;
+					     struct vc4_offset_node,
+					     head);
+			next_offset = next_node->offset;
 		}
 
 		if (next_offset - offset >= size) {
@@ -415,23 +415,23 @@ static bool get_insertion_point(struct vc4_dev *drv,
 				size_t *offset_out,
 				struct list_head **prev_out)
 {
-	struct list_head *prev = &drv->cma_pool.offset_buffers;
-	struct vc4_bo *bo;
+	struct list_head *prev = &drv->cma_pool.offset_nodes;
+	struct vc4_offset_node *node;
 	size_t offset = 0;
 
 	lockdep_assert_held(&drv->bo_lock);
 
-	list_for_each_entry(bo,
-			    &drv->cma_pool.offset_buffers,
-			    offset_buffers_head) {
-		if (bo->offset - offset >= size) {
+	list_for_each_entry(node,
+			    &drv->cma_pool.offset_nodes,
+			    head) {
+		if (node->offset - offset >= size) {
 			*offset_out = offset;
 			*prev_out = prev;
 			return true;
 		}
 
-		prev = &bo->offset_buffers_head;
-		offset = bo->offset + bo->base.size;
+		prev = &node->head;
+		offset = node->offset + node->size;
 	}
 
 	/* There still might be enough space after the last buffer, or
@@ -500,11 +500,11 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 	       bo->buffer_copy,
 	       bo->base.size);
 
-	bo->offset = offset;
+	bo->offset_node.offset = offset;
 	vfree(bo->buffer_copy);
 	bo->buffer_copy = NULL;
 
-	list_add(&bo->offset_buffers_head, prev);
+	list_add(&bo->offset_node.head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
 	return true;
@@ -556,9 +556,10 @@ struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size)
 		goto out;
 	}
 
-	bo->offset = offset;
+	bo->offset_node.offset = offset;
+	bo->offset_node.size = size;
 	bo->buffer_copy = NULL;
-	list_add(&bo->offset_buffers_head, prev);
+	list_add(&bo->offset_node.head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
 	bo->madv = VC4_MADV_WILLNEED;
@@ -719,32 +720,31 @@ static void vc4_bo_try_compact(struct vc4_bo *bo)
 
 	mutex_lock(&vc4->bo_lock);
 
-	if (bo->offset_buffers_head.prev == &vc4->cma_pool.offset_buffers) {
+	if (bo->offset_node.head.prev == &vc4->cma_pool.offset_nodes) {
 		prev_address = 0;
 	} else {
-		struct vc4_bo *prev_buffer =
-			container_of(bo->offset_buffers_head.prev,
-				     struct vc4_bo,
-				     offset_buffers_head);
-		prev_address = (prev_buffer->offset +
-				prev_buffer->base.size);
+		struct vc4_offset_node *prev_node =
+			container_of(bo->offset_node.head.prev,
+				     struct vc4_offset_node,
+				     head);
+		prev_address = prev_node->offset + prev_node->size;
 	}
 
-	if (prev_address < bo->offset) {
+	if (prev_address < bo->offset_node.offset) {
 		/* Invalidate any user-space mappings */
 		drm_vma_node_unmap(&bo->base.vma_node,
 				   bo->base.dev->anon_inode->i_mapping);
 
 		if (!prep_cma_pool_dma_memcpy(vc4,
 					      prev_address,
-					      bo->offset,
+					      bo->offset_node.offset,
 					      bo->base.size)) {
 			memmove(vc4->cma_pool.vaddr + prev_address,
-				vc4->cma_pool.vaddr + bo->offset,
+				vc4->cma_pool.vaddr + bo->offset_node.offset,
 				bo->base.size);
 		}
 
-		bo->offset = prev_address;
+		bo->offset_node.offset = prev_address;
 	}
 
 	mutex_unlock(&vc4->bo_lock);
@@ -1274,7 +1274,7 @@ int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 	}
 
 	INIT_LIST_HEAD(&vc4->cma_pool.mru_buffers);
-	INIT_LIST_HEAD(&vc4->cma_pool.offset_buffers);
+	INIT_LIST_HEAD(&vc4->cma_pool.offset_nodes);
 
 	dma_cap_zero(dma_mask);
 	dma_cap_set(DMA_MEMCPY, dma_mask);
@@ -1384,12 +1384,12 @@ dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
 
-	return vc4->cma_pool.paddr + to_vc4_bo(obj)->offset;
+	return vc4->cma_pool.paddr + to_vc4_bo(obj)->offset_node.offset;
 }
 
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
 
-	return vc4->cma_pool.vaddr + to_vc4_bo(obj)->offset;
+	return vc4->cma_pool.vaddr + to_vc4_bo(obj)->offset_node.offset;
 }

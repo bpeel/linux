@@ -299,6 +299,54 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 	mutex_unlock(&vc4->purgeable.lock);
 }
 
+static void finish_cma_pool_dma_memcpy(struct vc4_bo *bo)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	int ret;
+
+	if (bo->cma_pool_dma_cookie <= 0)
+		return;
+
+	ret = dma_sync_wait(vc4->cma_pool.dma_chan, bo->cma_pool_dma_cookie);
+	if (ret)
+		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
+
+	bo->cma_pool_dma_cookie = 0;
+	list_del(&bo->stub_offset_node.head);
+}
+
+static bool check_finished_cma_stub_node(struct vc4_offset_node *node)
+{
+	struct vc4_dev *vc4;
+	struct vc4_bo *bo;
+	enum dma_status status;
+
+	if (node->type != VC4_OFFSET_NODE_TYPE_STUB)
+		return false;
+
+	bo = container_of(node, struct vc4_bo, stub_offset_node);
+	vc4 = to_vc4_dev(bo->base.dev);
+	status = dma_async_is_tx_complete(vc4->cma_pool.dma_chan,
+					  bo->cma_pool_dma_cookie,
+					  NULL, /* last */
+					  NULL /* used */);
+
+	switch (status) {
+	case DMA_ERROR:
+		DRM_ERROR("DMA transfer for CMA pool compaction failed\n");
+		/* flow through */
+	case DMA_COMPLETE:
+		bo->cma_pool_dma_cookie = 0;
+		list_del(&bo->stub_offset_node.head);
+		return true;
+	case DMA_IN_PROGRESS:
+	case DMA_PAUSED:
+		break;
+	}
+
+	return false;
+}
+
 static bool page_out_buffer(struct vc4_bo *buf)
 {
 	struct drm_gem_object *obj = &buf->base;
@@ -312,6 +360,8 @@ static bool page_out_buffer(struct vc4_bo *buf)
 
 	if (buf->buffer_copy == NULL)
 		return false;
+
+	finish_cma_pool_dma_memcpy(buf);
 
 	memcpy(buf->buffer_copy,
 	       vc4_bo_get_vaddr(&buf->base),
@@ -416,14 +466,18 @@ static bool get_insertion_point(struct vc4_dev *drv,
 				struct list_head **prev_out)
 {
 	struct list_head *prev = &drv->cma_pool.offset_nodes;
-	struct vc4_offset_node *node;
+	struct vc4_offset_node *node, *tmp;
 	size_t offset = 0;
 
 	lockdep_assert_held(&drv->bo_lock);
 
-	list_for_each_entry(node,
-			    &drv->cma_pool.offset_nodes,
-			    head) {
+	list_for_each_entry_safe(node,
+				 tmp,
+				 &drv->cma_pool.offset_nodes,
+				 head) {
+		if (check_finished_cma_stub_node(node))
+			continue;
+
 		if (node->offset - offset >= size) {
 			*offset_out = offset;
 			*prev_out = prev;
@@ -523,6 +577,8 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 		/* Move the buffer to the head of the MRU list */
 		list_del(&bo->mru_buffers_head);
 		list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
+
+		finish_cma_pool_dma_memcpy(bo);
 	}
 
 	return 0;
@@ -558,6 +614,8 @@ struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size)
 
 	bo->offset_node.offset = offset;
 	bo->offset_node.size = size;
+	bo->offset_node.type = VC4_OFFSET_NODE_TYPE_BUFFER;
+	bo->stub_offset_node.type = VC4_OFFSET_NODE_TYPE_STUB;
 	bo->buffer_copy = NULL;
 	list_add(&bo->offset_node.head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
@@ -661,12 +719,12 @@ void vc4_free_object(struct drm_gem_object *gem_bo)
 
 static bool prep_cma_pool_dma_memcpy(struct vc4_dev *vc4,
 				     size_t dst_address,
-				     size_t src_address,
-				     size_t size)
+				     struct vc4_bo *bo)
 {
 	struct dma_chan *chan = vc4->cma_pool.dma_chan;
 	struct dma_async_tx_descriptor *tx;
-	dma_cookie_t cookie;
+	size_t src_address = bo->offset_node.offset;
+	size_t size = bo->base.size;
 	int ret;
 
 	if (chan == NULL)
@@ -677,6 +735,18 @@ static bool prep_cma_pool_dma_memcpy(struct vc4_dev *vc4,
 	 */
 	if (dst_address >= src_address && src_address + size > dst_address)
 		return false;
+
+	/* If the source and dest ranges overlap then only mark the
+	 * range after the dest as a stub to keep the data structure
+	 * coherent.
+	 */
+	if (src_address < dst_address + size) {
+		bo->stub_offset_node.offset = dst_address + size;
+		bo->stub_offset_node.size = src_address - dst_address;
+	} else {
+		bo->stub_offset_node.offset = src_address;
+		bo->stub_offset_node.size = size;
+	}
 
 	tx = chan->device->device_prep_dma_memcpy(chan,
 						  vc4->cma_pool.paddr +
@@ -690,17 +760,14 @@ static bool prep_cma_pool_dma_memcpy(struct vc4_dev *vc4,
 		return false;
 	}
 
-	cookie = tx->tx_submit(tx);
-	ret = dma_submit_error(cookie);
+	bo->cma_pool_dma_cookie = tx->tx_submit(tx);
+	ret = dma_submit_error(bo->cma_pool_dma_cookie);
 	if (ret) {
 		DRM_ERROR("Failed to submit DMA: %d\n", ret);
 		return false;
 	}
-	ret = dma_sync_wait(chan, cookie);
-	if (ret) {
-		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
-		return false;
-	}
+
+	list_add(&bo->stub_offset_node.head, &bo->offset_node.head);
 
 	return true;
 }
@@ -720,14 +787,22 @@ static void vc4_bo_try_compact(struct vc4_bo *bo)
 
 	mutex_lock(&vc4->bo_lock);
 
-	if (bo->offset_node.head.prev == &vc4->cma_pool.offset_nodes) {
-		prev_address = 0;
-	} else {
-		struct vc4_offset_node *prev_node =
-			container_of(bo->offset_node.head.prev,
-				     struct vc4_offset_node,
-				     head);
-		prev_address = prev_node->offset + prev_node->size;
+	while (true) {
+		struct vc4_offset_node *prev_node;
+
+		if (bo->offset_node.head.prev == &vc4->cma_pool.offset_nodes) {
+			prev_address = 0;
+			break;
+		}
+
+		prev_node = container_of(bo->offset_node.head.prev,
+					 struct vc4_offset_node,
+					 head);
+
+		if (!check_finished_cma_stub_node(prev_node)) {
+			prev_address = prev_node->offset + prev_node->size;
+			break;
+		}
 	}
 
 	if (prev_address < bo->offset_node.offset) {
@@ -735,10 +810,7 @@ static void vc4_bo_try_compact(struct vc4_bo *bo)
 		drm_vma_node_unmap(&bo->base.vma_node,
 				   bo->base.dev->anon_inode->i_mapping);
 
-		if (!prep_cma_pool_dma_memcpy(vc4,
-					      prev_address,
-					      bo->offset_node.offset,
-					      bo->base.size)) {
+		if (!prep_cma_pool_dma_memcpy(vc4, prev_address, bo)) {
 			memmove(vc4->cma_pool.vaddr + prev_address,
 				vc4->cma_pool.vaddr + bo->offset_node.offset,
 				bo->base.size);

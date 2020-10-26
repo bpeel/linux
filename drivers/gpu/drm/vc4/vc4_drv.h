@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/refcount.h>
 #include <linux/uaccess.h>
+#include <linux/dmaengine.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_debugfs.h>
@@ -76,6 +77,19 @@ struct vc4_perfmon {
 struct vc4_offset_node {
 	/* Linked-list node */
 	struct list_head head;
+
+	enum {
+		/* The node is embedded in a vc4_bo and the buffer can
+		 * be obtained with container_of.
+		 */
+		VC4_OFFSET_NODE_TYPE_BUFFER,
+		/* The node is a stub used to prevent the address
+		 * range from being used. This will happen when a DMA
+		 * memcpy is in progress and the source address range
+		 * can’t be used.
+		 */
+		VC4_OFFSET_NODE_TYPE_STUB,
+	} type;
 
 	size_t offset;
 	size_t size;
@@ -274,6 +288,14 @@ struct vc4_bo {
 	struct list_head mru_buffers_head;
 	/* Link within cma_pool.offset_buffers */
 	struct vc4_offset_node offset_node;
+	/* Stub node inserted into cma_pool.offset_buffers to mark the
+	 * source range when the buffer is busy in a DMA transfer.
+	 */
+	struct vc4_offset_node stub_offset_node;
+	/* If this is non-zero, then it is a cookie for an inflight
+	 * DMA transfer to move the buffer to a different offset.
+	 */
+	dma_cookie_t cma_pool_dma_cookie;
 
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;

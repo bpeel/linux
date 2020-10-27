@@ -671,11 +671,10 @@ static bool prep_cma_pool_dma_memcpy(struct vc4_dev *vc4,
 	if (chan == NULL)
 		return false;
 
-	/* The DMA memcpy (probably?) won’t work if the dest and src
-	 * overlap.
+	/* The DMA memcpy won’t work if the address range overlaps and
+	 * the destination is at a higher address.
 	 */
-	if (dst_address + size > src_address &&
-	    src_address + size > dst_address)
+	if (dst_address >= src_address && src_address + size > dst_address)
 		return false;
 
 	tx = chan->device->device_prep_dma_memcpy(chan,

@@ -210,6 +210,8 @@ static void vc4_bo_destroy(struct vc4_bo *bo)
 
 	drm_gem_object_release(obj);
 
+	printk("@@@ destroy %p\n", bo);
+
 	kfree(bo);
 }
 
@@ -572,6 +574,8 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 
 	lockdep_assert_held(&vc4->bo_lock);
 
+	printk("@@@ use %p\n", bo);
+
 	if (bo->buffer_copy) {
 		if (!page_in_buffer(vc4, bo))
 			return -ENOMEM;
@@ -660,6 +664,17 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	ret = drm_gem_create_mmap_offset(gem_obj);
 	if (ret)
 		goto error;
+
+	printk("@@@ create %p %zu%s\n",
+	       bo,
+	       size,
+	       type == VC4_BO_TYPE_BIN ?
+	       " BIN" :
+	       (type == VC4_BO_TYPE_DUMB &&
+		(vc4->dev->fb_helper == NULL ||
+		 vc4->dev->fb_helper->buffer == NULL)) ?
+	       " FBCON" :
+	       "");
 
 	/* By default, BOs do not support the MADV ioctl. This will be enabled
 	 * only on BOs that are exposed to userspace (V3D, V3D_SHADER and DUMB
@@ -841,8 +856,10 @@ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
 	mutex_lock(&bo->madv_lock);
 	switch (bo->madv) {
 	case VC4_MADV_WILLNEED:
-		if (!refcount_inc_not_zero(&bo->usecnt))
+		if (!refcount_inc_not_zero(&bo->usecnt)) {
+			printk("@@@ add_usecnt %p\n", bo);
 			refcount_set(&bo->usecnt, 1);
+		}
 		ret = 0;
 		break;
 	case VC4_MADV_DONTNEED:
@@ -874,6 +891,8 @@ void vc4_bo_dec_usecnt(struct vc4_bo *bo)
 
 	mutex_lock(&bo->madv_lock);
 	if (refcount_dec_and_test(&bo->usecnt)) {
+		printk("@@@ remove_usecnt %p\n", bo);
+
 		if (bo->madv == VC4_MADV_DONTNEED)
 			vc4_bo_add_to_purgeable_pool(bo);
 		vc4_bo_try_compact(bo);

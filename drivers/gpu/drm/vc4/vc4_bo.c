@@ -169,6 +169,22 @@ static void vc4_bo_remove_from_pool(struct vc4_bo *bo)
 	}
 }
 
+static void finish_cma_pool_dma_memcpy(struct vc4_bo *bo)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	int ret;
+
+	if (bo->cma_pool_dma_cookie <= 0)
+		return;
+
+	ret = dma_sync_wait(vc4->cma_pool.dma_chan, bo->cma_pool_dma_cookie);
+	if (ret)
+		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
+
+	bo->cma_pool_dma_cookie = 0;
+	list_del(&bo->stub_offset_node.head);
+}
+
 static void vc4_bo_destroy(struct vc4_bo *bo)
 {
 	struct drm_gem_object *obj = &bo->base;
@@ -182,6 +198,8 @@ static void vc4_bo_destroy(struct vc4_bo *bo)
 	}
 
 	mutex_lock(&vc4->bo_lock);
+
+	finish_cma_pool_dma_memcpy(bo);
 
 	vc4_bo_set_label(obj, -1);
 
@@ -297,22 +315,6 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 		}
 	}
 	mutex_unlock(&vc4->purgeable.lock);
-}
-
-static void finish_cma_pool_dma_memcpy(struct vc4_bo *bo)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
-	int ret;
-
-	if (bo->cma_pool_dma_cookie <= 0)
-		return;
-
-	ret = dma_sync_wait(vc4->cma_pool.dma_chan, bo->cma_pool_dma_cookie);
-	if (ret)
-		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
-
-	bo->cma_pool_dma_cookie = 0;
-	list_del(&bo->stub_offset_node.head);
 }
 
 static bool check_finished_cma_stub_node(struct vc4_offset_node *node)

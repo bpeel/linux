@@ -95,10 +95,8 @@ struct vc4_dev {
 		 * were last used (most-recent first).
 		 */
 		struct list_head mru_buffers;
-		/* Buffers that are in the pool, in the order of their
-		 * offset.
-		 */
-		struct list_head offset_buffers;
+		/* Memory manager for the pool */
+		struct drm_mm mm;
 	} cma_pool;
 
 	u32 num_labels;
@@ -257,16 +255,14 @@ struct vc4_bo {
 
 	/* Link within cma_pool.mru_buffers */
 	struct list_head mru_buffers_head;
-	/* Link within cma_pool.offset_buffers */
-	struct list_head offset_buffers_head;
+	/* Node with in the memory manager for the CMA pool */
+	struct drm_mm_node mm_node;
 
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
 
-	/* Offset within the CMA bool buffer when the buffer is paged
-	 * in.
-	 */
-	size_t offset;
+	/* Temporary list entry when calling drm_mm_scan */
+	struct list_head eviction_head;
 
 	/* Pointer to a copy of the data in vmalloc’d memory when the
 	 * buffer is paged out.

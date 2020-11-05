@@ -18,6 +18,7 @@
 
 #include <linux/dma-buf.h>
 #include <drm/drm_fb_helper.h>
+#include <drm/drm_mm.h>
 
 #include "vc4_drv.h"
 #include "uapi/drm/vc4_drm.h"
@@ -163,7 +164,7 @@ static void vc4_bo_remove_from_pool(struct vc4_bo *bo)
 		vfree(bo->buffer_copy);
 	} else {
 		list_del(&bo->mru_buffers_head);
-		list_del(&bo->offset_buffers_head);
+		drm_mm_remove_node(&bo->mm_node);
 	}
 }
 
@@ -317,7 +318,7 @@ static bool page_out_buffer(struct vc4_bo *buf)
 	       buf->base.size);
 
 	list_del(&buf->mru_buffers_head);
-	list_del(&buf->offset_buffers_head);
+	drm_mm_remove_node(&buf->mm_node);
 
 	/* Invalidate any user-space mappings */
 	drm_vma_node_unmap(&obj->vma_node, dev->anon_inode->i_mapping);
@@ -342,27 +343,35 @@ static bool is_unmovable_buffer(struct vc4_dev *vc4,
 }
 
 static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
-					   size_t size,
-					   size_t *offset_out,
-					   struct list_head **prev_out)
+					   size_t size)
 {
 	struct vc4_bo *buffer, *tmp;
 	struct drm_gem_object *fb_buf = NULL;
+	struct list_head eviction_list;
+	struct drm_mm_scan scan;
+	int ret;
 
 	if (vc4->dev->fb_helper && vc4->dev->fb_helper->buffer)
 		fb_buf = vc4->dev->fb_helper->buffer->gem;
 
-	/* We couldn’t find a big enough free slot so start paging out
-	 * the least-recently used buffers until we make a slot.
+	drm_mm_scan_init_with_range(&scan,
+				    &vc4->cma_pool.mm,
+				    size,
+				    PAGE_SIZE,
+				    0, /* color */
+				    0, /* start */
+				    VC4_CMA_POOL_SIZE,
+				    DRM_MM_INSERT_BEST);
+	INIT_LIST_HEAD(&eviction_list);
+
+	/* Let the drm_mm pick what to evict to make a hole for the
+	 * buffer. The buffers are scanned in order of LRU so that it
+	 * will hopefully prefer paging out unused buffers first.
 	 */
 	list_for_each_entry_safe_reverse(buffer,
 					 tmp,
 					 &vc4->cma_pool.mru_buffers,
 					 mru_buffers_head) {
-		struct list_head *prev;
-		size_t offset;
-		size_t next_offset;
-
 		/* Don’t page out buffers that are in use */
 		if (refcount_read(&buffer->usecnt))
 			continue;
@@ -382,85 +391,65 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 		    buffer->label == VC4_BO_TYPE_RCL)
 			continue;
 
-		if (buffer->offset_buffers_head.prev ==
-		    &vc4->cma_pool.offset_buffers) {
-			prev = &vc4->cma_pool.offset_buffers;
-			offset = 0;
-		} else {
-			struct vc4_bo *prev_buffer =
-				container_of(buffer->offset_buffers_head.prev,
-					     struct vc4_bo,
-					     offset_buffers_head);
-			offset = prev_buffer->offset + prev_buffer->base.size;
-			prev = &prev_buffer->offset_buffers_head;
-		}
+		list_add(&buffer->eviction_head, &eviction_list);
 
-		if (!page_out_buffer(buffer))
-			continue;
+		if (drm_mm_scan_add_block(&scan, &buffer->mm_node))
+			goto found;
+	}
 
-		if (prev->next == &vc4->cma_pool.offset_buffers) {
-			next_offset = VC4_CMA_POOL_SIZE;
-		} else {
-			struct vc4_bo *next_buffer =
-				container_of(prev->next,
-					     struct vc4_bo,
-					     offset_buffers_head);
-			next_offset = next_buffer->offset;
-		}
-
-		if (next_offset - offset >= size) {
-			*offset_out = offset;
-			*prev_out = prev;
-			return true;
-		}
+	/* Nothing found, clean up and bail out! */
+	list_for_each_entry(buffer, &eviction_list, eviction_head) {
+		ret = drm_mm_scan_remove_block(&scan, &buffer->mm_node);
+		BUG_ON(ret);
 	}
 
 	return false;
-}
 
-static bool get_insertion_point(struct vc4_dev *drv,
-				size_t size,
-				size_t *offset_out,
-				struct list_head **prev_out)
-{
-	struct list_head *prev = &drv->cma_pool.offset_buffers;
-	struct vc4_bo *bo;
-	size_t offset = 0;
-
-	lockdep_assert_held(&drv->bo_lock);
-
-	list_for_each_entry(bo,
-			    &drv->cma_pool.offset_buffers,
-			    offset_buffers_head) {
-		if (bo->offset - offset >= size) {
-			*offset_out = offset;
-			*prev_out = prev;
-			return true;
-		}
-
-		prev = &bo->offset_buffers_head;
-		offset = bo->offset + bo->base.size;
-	}
-
-	/* There still might be enough space after the last buffer, or
-	 * the pool might be empty
+found:
+	/* drm_mm doesn’t allow any other other operations while
+	 * scanning, so we’ll do this in two steps by removing
+	 * anything that shouldn’t be evicted from the list and then
+	 * paging them all out as the second step.
 	 */
-	if (offset + size <= VC4_CMA_POOL_SIZE) {
-		*offset_out = offset;
-		*prev_out = prev;
-		return true;
+	list_for_each_entry_safe(buffer, tmp, &eviction_list, eviction_head) {
+		if (!drm_mm_scan_remove_block(&scan, &buffer->mm_node))
+			list_del(&buffer->eviction_head);
 	}
 
-	return false;
+	list_for_each_entry(buffer, &eviction_list, eviction_head) {
+		if (!page_out_buffer(buffer))
+			return false;
+	}
+
+	return true;
 }
 
-static bool get_insertion_point_or_free(struct vc4_dev *drv,
-					size_t size,
-					size_t *offset_out,
-					struct list_head **prev_out)
+static bool insert_buffer_in_cma_pool(struct vc4_dev *vc4,
+				      struct vc4_bo *bo,
+				      enum drm_mm_insert_mode mode)
+{
+	int ret;
+
+	ret = drm_mm_insert_node_generic(&vc4->cma_pool.mm,
+					 &bo->mm_node,
+					 bo->base.size,
+					 PAGE_SIZE,
+					 0, /* color */
+					 mode);
+
+	if (ret)
+		return false;
+
+	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
+
+	return true;
+}
+
+static bool insert_buffer_in_cma_pool_or_evict(struct vc4_dev *drv,
+					       struct vc4_bo *bo)
 {
 	/* Check if there is a gap already available */
-	if (get_insertion_point(drv, size, offset_out, prev_out))
+	if (insert_buffer_in_cma_pool(drv, bo, DRM_MM_INSERT_BEST))
 		return true;
 
 	/*
@@ -475,18 +464,16 @@ static bool get_insertion_point_or_free(struct vc4_dev *drv,
 	 */
 	vc4_bo_userspace_cache_purge(drv);
 
-	if (get_insertion_point(drv, size, offset_out, prev_out))
+	if (insert_buffer_in_cma_pool(drv, bo, DRM_MM_INSERT_BEST))
 		return true;
 
 	/* Try paging out some unused buffers */
-	if (page_out_buffers_for_insertion(drv,
-					   size,
-					   offset_out,
-					   prev_out))
+	if (page_out_buffers_for_insertion(drv, bo->base.size) &&
+	    insert_buffer_in_cma_pool(drv, bo, DRM_MM_INSERT_EVICT))
 		return true;
 
 	DRM_INFO("Couldn't find insertion point for buffer of size %zu\n",
-		 size);
+		 bo->base.size);
 
 	return false;
 }
@@ -494,26 +481,19 @@ static bool get_insertion_point_or_free(struct vc4_dev *drv,
 static bool page_in_buffer(struct vc4_dev *vc4,
 			   struct vc4_bo *bo)
 {
-	size_t offset;
-	struct list_head *prev;
-
 	lockdep_assert_held(&vc4->bo_lock);
 
 	DRM_INFO("Paging in buffer of size %zu\n", bo->base.size);
 
-	if (!get_insertion_point_or_free(vc4, bo->base.size, &offset, &prev))
+	if (!insert_buffer_in_cma_pool_or_evict(vc4, bo))
 		return false;
 
-	memcpy((uint8_t *) vc4->cma_pool.vaddr + offset,
+	memcpy((uint8_t *) vc4->cma_pool.vaddr + bo->mm_node.start,
 	       bo->buffer_copy,
 	       bo->base.size);
 
-	bo->offset = offset;
 	vfree(bo->buffer_copy);
 	bo->buffer_copy = NULL;
-
-	list_add(&bo->offset_buffers_head, prev);
-	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
 	return true;
 }
@@ -560,18 +540,13 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 }
 
 static bool
-get_insertion_point_or_wait(struct vc4_dev *vc4,
-			    size_t size,
-			    size_t *offset_out,
-			    struct list_head **prev_out)
+insert_buffer_in_cma_pool_or_wait(struct vc4_dev *vc4,
+				  struct vc4_bo *bo)
 {
 	while (true) {
 		uint64_t finished_seqno = vc4->finished_seqno;
 
-		if (get_insertion_point_or_free(vc4,
-						size,
-						offset_out,
-						prev_out))
+		if (insert_buffer_in_cma_pool_or_evict(vc4, bo))
 			return true;
 
 		/* If there are any pending jobs that were emitted and
@@ -602,15 +577,8 @@ static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 			       enum vc4_kernel_bo_type type)
 {
 	struct vc4_bo *bo;
-	size_t offset;
-	struct list_head *prev;
 
 	mutex_lock(&vc4->bo_lock);
-
-	if (!get_insertion_point_or_wait(vc4, size, &offset, &prev)) {
-		bo = ERR_PTR(-ENOMEM);
-		goto out;
-	}
 
 	bo = kzalloc(sizeof(*bo), GFP_KERNEL);
 	if (!bo) {
@@ -618,11 +586,15 @@ static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 		goto out;
 	}
 
-	bo->offset = offset;
 	bo->base.size = size;
+
+	if (!insert_buffer_in_cma_pool_or_wait(vc4, bo)) {
+		kfree(bo);
+		bo = ERR_PTR(-ENOMEM);
+		goto out;
+	}
+
 	bo->buffer_copy = NULL;
-	list_add(&bo->offset_buffers_head, prev);
-	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
 	bo->madv = VC4_MADV_WILLNEED;
 	refcount_set(&bo->usecnt, 0);
@@ -1244,13 +1216,17 @@ int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 	}
 
 	INIT_LIST_HEAD(&vc4->cma_pool.mru_buffers);
-	INIT_LIST_HEAD(&vc4->cma_pool.offset_buffers);
+
+	drm_mm_init(&vc4->cma_pool.mm,
+		    0, /* start */
+		    VC4_CMA_POOL_SIZE);
 
 	return 0;
 }
 
 void vc4_bo_cma_pool_destroy(struct vc4_dev *vc4)
 {
+	drm_mm_takedown(&vc4->cma_pool.mm);
 	dma_free_wc(vc4->dev->dev,
 		    VC4_CMA_POOL_SIZE,
 		    vc4->cma_pool.vaddr,
@@ -1346,7 +1322,7 @@ dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj)
 	if (bo->buffer_copy)
 		DRM_WARN("vc4_bo_get_paddr called on paged out buffer\n");
 
-	return vc4->cma_pool.paddr + bo->offset;
+	return vc4->cma_pool.paddr + bo->mm_node.start;
 }
 
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj)
@@ -1357,7 +1333,7 @@ void *vc4_bo_get_vaddr(struct drm_gem_object *obj)
 	if (bo->buffer_copy)
 		DRM_WARN("vc4_bo_get_vaddr called on paged out buffer\n");
 
-	return vc4->cma_pool.vaddr + bo->offset;
+	return vc4->cma_pool.vaddr + bo->mm_node.start;
 }
 
 uint32_t vc4_get_pool_size(struct vc4_dev *vc4)
@@ -1369,8 +1345,8 @@ uint32_t vc4_get_pool_size(struct vc4_dev *vc4)
 
 	/* Subtract any buffers that can’t be paged out */
 	list_for_each_entry(bo,
-			    &vc4->cma_pool.offset_buffers,
-			    offset_buffers_head) {
+			    &vc4->cma_pool.mru_buffers,
+			    mru_buffers_head) {
 		if (is_unmovable_buffer(vc4, bo))
 			size -= bo->base.size;
 	}

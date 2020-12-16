@@ -331,6 +331,7 @@ struct drm_vc4_get_hang_state {
 #define DRM_VC4_PARAM_SUPPORTS_FIXED_RCL_ORDER	6
 #define DRM_VC4_PARAM_SUPPORTS_MADVISE		7
 #define DRM_VC4_PARAM_SUPPORTS_PERFMON		8
+#define DRM_VC4_PARAM_MEMORY_POOL_SIZE		9
 
 struct drm_vc4_get_param {
 	__u32 param;

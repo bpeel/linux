@@ -108,6 +108,9 @@ static int vc4_get_param_ioctl(struct drm_device *dev, void *data,
 	case DRM_VC4_PARAM_SUPPORTS_PERFMON:
 		args->value = true;
 		break;
+	case DRM_VC4_PARAM_MEMORY_POOL_SIZE:
+		args->value = vc4_get_pool_size(vc4);
+		break;
 	default:
 		DRM_DEBUG("Unknown parameter %d\n", args->param);
 		return -EINVAL;

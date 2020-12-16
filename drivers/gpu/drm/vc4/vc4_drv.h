@@ -839,6 +839,7 @@ void vc4_bo_remove_from_purgeable_pool(struct vc4_bo *bo);
 int vc4_bo_use(struct vc4_bo *bo);
 dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj);
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj);
+uint32_t vc4_get_pool_size(struct vc4_dev *vc4);
 
 /* vc4_crtc.c */
 extern struct platform_driver vc4_crtc_driver;

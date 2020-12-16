@@ -1303,3 +1303,23 @@ void *vc4_bo_get_vaddr(struct drm_gem_object *obj)
 
 	return vc4->cma_pool.vaddr + to_vc4_bo(obj)->offset;
 }
+
+uint32_t vc4_get_pool_size(struct vc4_dev *vc4)
+{
+	uint32_t size = VC4_CMA_POOL_SIZE;
+	struct vc4_bo *bo;
+
+	mutex_lock(&vc4->bo_lock);
+
+	/* Subtract any buffers that can’t be paged out */
+	list_for_each_entry(bo,
+			    &vc4->cma_pool.offset_buffers,
+			    offset_buffers_head) {
+		if (is_unmovable_buffer(vc4, bo))
+			size -= bo->base.size;
+	}
+
+	mutex_unlock(&vc4->bo_lock);
+
+	return size;
+}

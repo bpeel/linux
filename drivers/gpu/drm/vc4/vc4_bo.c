@@ -518,16 +518,77 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 
 	lockdep_assert_held(&vc4->bo_lock);
 
-	if (bo->buffer_copy) {
-		if (!page_in_buffer(vc4, bo))
+	while (bo->buffer_copy) {
+		uint64_t finished_seqno = vc4->finished_seqno;
+
+		if (page_in_buffer(vc4, bo))
+			return 0;
+
+		/* If there are any pending jobs that were emitted and
+		 * weren’t completed before we tried to page in the
+		 * buffer then wait for a job to complete and try
+		 * again in case that frees up some space.
+		 */
+
+		if (vc4->emit_seqno > finished_seqno) {
+			DRM_INFO("Waiting for job complete before trying "
+				 "to page in again -> %llu\n",
+				 finished_seqno + 1);
+			mutex_unlock(&vc4->bo_lock);
+			vc4_wait_for_seqno(&vc4->base,
+					   finished_seqno + 1,
+					   ~0ull, /* timeout */
+					   false /* interruptible */);
+			flush_work(&vc4->job_done_work);
+			mutex_lock(&vc4->bo_lock);
+		} else {
 			return -ENOMEM;
-	} else {
-		/* Move the buffer to the head of the MRU list */
-		list_del(&bo->mru_buffers_head);
-		list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
+		}
 	}
 
+	/* Move the buffer to the head of the MRU list */
+	list_del(&bo->mru_buffers_head);
+	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
+
 	return 0;
+}
+
+static bool
+get_insertion_point_or_wait(struct vc4_dev *vc4,
+			    size_t size,
+			    size_t *offset_out,
+			    struct list_head **prev_out)
+{
+	while (true) {
+		uint64_t finished_seqno = vc4->finished_seqno;
+
+		if (get_insertion_point_or_free(vc4,
+						size,
+						offset_out,
+						prev_out))
+			return true;
+
+		/* If there are any pending jobs that were emitted and
+		 * weren’t completed before we tried to page in the
+		 * buffer then wait for a job to complete and try
+		 * again in case that frees up some space.
+		 */
+
+		if (vc4->emit_seqno > finished_seqno) {
+			DRM_INFO("Waiting for job complete before trying "
+				 "to page in again -> %llu\n",
+				 finished_seqno + 1);
+			mutex_unlock(&vc4->bo_lock);
+			vc4_wait_for_seqno(&vc4->base,
+					   finished_seqno + 1,
+					   ~0ull, /* timeout */
+					   false /* interruptible */);
+			flush_work(&vc4->job_done_work);
+			mutex_lock(&vc4->bo_lock);
+		} else {
+			return false;
+		}
+	}
 }
 
 static const struct vm_operations_struct vc4_vm_ops = {
@@ -561,7 +622,7 @@ struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size)
 
 	mutex_lock(&vc4->bo_lock);
 
-	if (!get_insertion_point_or_free(vc4, size, &offset, &prev)) {
+	if (!get_insertion_point_or_wait(vc4, size, &offset, &prev)) {
 		bo = ERR_PTR(-ENOMEM);
 		goto out;
 	}

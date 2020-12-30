@@ -580,14 +580,36 @@ static int use_bo_locked(struct vc4_bo *bo)
 
 	lockdep_assert_held(&vc4->bo_lock);
 
-	if (bo->paged_in) {
+	while (!bo->paged_in) {
+		uint64_t completed_seqno = vc4->completed_seqno;
+
 		if (page_in_buffer(vc4, bo, true /* copy_from_shmem */))
+			return 0;
+
+		/* If there are any pending jobs that were emitted and
+		 * weren’t completed before we tried to page in the
+		 * buffer then wait for a job to complete and try
+		 * again in case that frees up some space.
+		 */
+
+		if (vc4->emit_seqno > completed_seqno) {
+			DRM_INFO("Waiting for job complete before trying "
+				 "to page in again -> %llu\n",
+				 completed_seqno + 1);
+			mutex_unlock(&vc4->bo_lock);
+			vc4_wait_for_seqno(&vc4->base,
+					   completed_seqno + 1,
+					   ~0ull, /* timeout */
+					   false /* interruptible */);
+			mutex_lock(&vc4->bo_lock);
+		} else {
 			return -ENOMEM;
-	} else {
-		/* Move the buffer to the head of the MRU list */
-		list_del(&bo->mru_buffers_head);
-		list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
+		}
 	}
+
+	/* Move the buffer to the head of the MRU list */
+	list_del(&bo->mru_buffers_head);
+	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
 	if (bo->shmem_dirty_start != bo->shmem_dirty_end) {
 		int ret = copy_to_cma_pool(vc4, bo);

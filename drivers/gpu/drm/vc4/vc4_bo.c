@@ -376,6 +376,15 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 		if (is_unmovable_buffer(vc4, buffer))
 			continue;
 
+		/* Don’t page out BCL and RCL buffers. These can’t be
+		 * marked with a usecnt because they don’t support
+		 * madv. They shouldn’t exist longer than the job they
+		 * belong to anyway.
+		 */
+		if (buffer->label == VC4_BO_TYPE_BCL ||
+		    buffer->label == VC4_BO_TYPE_RCL)
+			continue;
+
 		if (buffer->offset_buffers_head.prev ==
 		    &vc4->cma_pool.offset_buffers) {
 			prev = &vc4->cma_pool.offset_buffers;

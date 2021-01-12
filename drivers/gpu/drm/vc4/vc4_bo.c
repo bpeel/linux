@@ -904,13 +904,13 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 
 	if (use_bo_unlocked(bo))
 		ret = VM_FAULT_OOM;
+	else
+		mmap_ret = mmap_pgoff_dance(vma, obj);
 
 	mutex_unlock(&vc4->bo_lock);
 
 	if (ret)
 		return ret;
-
-	mmap_ret = mmap_pgoff_dance(vma, obj);
 
 	switch (mmap_ret) {
 	case EAGAIN:

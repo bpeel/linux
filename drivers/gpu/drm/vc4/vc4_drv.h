@@ -29,10 +29,6 @@ struct drm_gem_object;
  * this.
  */
 enum vc4_kernel_bo_type {
-	/* Any kernel allocation (gem_create_object hook) before it
-	 * gets another type set.
-	 */
-	VC4_BO_TYPE_KERNEL,
 	VC4_BO_TYPE_V3D,
 	VC4_BO_TYPE_V3D_SHADER,
 	VC4_BO_TYPE_DUMB,
@@ -800,7 +796,6 @@ struct vc4_validated_shader_info {
 #define wait_for(COND, MS)		_wait_for((COND), (MS) * 1000, 10, 1000)
 
 /* vc4_bo.c */
-struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size);
 void vc4_free_object(struct drm_gem_object *gem_obj);
 struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t size,
 			     bool from_cache, enum vc4_kernel_bo_type type);

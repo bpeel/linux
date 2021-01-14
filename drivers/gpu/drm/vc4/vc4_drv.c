@@ -201,7 +201,6 @@ static struct drm_driver vc4_drm_driver = {
 	.debugfs_init = vc4_debugfs_init,
 #endif
 
-	.gem_create_object = vc4_create_object,
 	.gem_free_object_unlocked = vc4_free_object,
 	.gem_vm_ops = &vc4_vm_ops,
 

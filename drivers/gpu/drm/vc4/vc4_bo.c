@@ -305,6 +305,7 @@ static bool page_out_buffer(struct vc4_bo *buf)
 {
 	struct drm_gem_object *obj = &buf->base;
 	struct drm_device *dev = obj->dev;
+	void *vaddr = vc4_bo_get_vaddr(&buf->base);
 
 	WARN_ON(buf->buffer_copy != NULL);
 
@@ -316,7 +317,7 @@ static bool page_out_buffer(struct vc4_bo *buf)
 		return false;
 
 	memcpy(buf->buffer_copy,
-	       vc4_bo_get_vaddr(&buf->base),
+	       vaddr,
 	       buf->base.size);
 
 	list_del(&buf->mru_buffers_head);
@@ -1363,15 +1364,23 @@ int vc4_label_bo_ioctl(struct drm_device *dev, void *data,
 dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
+	struct vc4_bo *bo = to_vc4_bo(obj);
 
-	return vc4->cma_pool.paddr + to_vc4_bo(obj)->offset;
+	if (bo->buffer_copy)
+		DRM_WARN("vc4_bo_get_paddr called on paged out buffer\n");
+
+	return vc4->cma_pool.paddr + bo->offset;
 }
 
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
+	struct vc4_bo *bo = to_vc4_bo(obj);
 
-	return vc4->cma_pool.vaddr + to_vc4_bo(obj)->offset;
+	if (bo->buffer_copy)
+		DRM_WARN("vc4_bo_get_vaddr called on paged out buffer\n");
+
+	return vc4->cma_pool.vaddr + bo->offset;
 }
 
 uint32_t vc4_get_pool_size(struct vc4_dev *vc4)

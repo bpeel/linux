@@ -29,7 +29,6 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf);
 #define VC4_CMA_POOL_SIZE (128 * 1024 * 1024)
 
 static const char * const bo_type_names[] = {
-	"kernel",
 	"V3D",
 	"V3D shader",
 	"dumb",
@@ -615,17 +614,10 @@ static const struct drm_gem_object_funcs vc4_gem_object_funcs = {
 	.vm_ops = &vc4_vm_ops,
 };
 
-/**
- * vc4_create_object - Implementation of driver->gem_create_object.
- * @dev: DRM device
- * @size: Size in bytes of the memory the object will reference
- *
- * This lets the CMA helpers allocate object structs for us, and keep
- * our BO stats correct.
- */
-struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size)
+static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
+			       size_t size,
+			       enum vc4_kernel_bo_type type)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_bo *bo;
 	size_t offset;
 	struct list_head *prev;
@@ -652,16 +644,16 @@ struct drm_gem_object *vc4_create_object(struct drm_device *dev, size_t size)
 	bo->madv = VC4_MADV_WILLNEED;
 	refcount_set(&bo->usecnt, 0);
 	mutex_init(&bo->madv_lock);
-	bo->label = VC4_BO_TYPE_KERNEL;
-	vc4->bo_labels[VC4_BO_TYPE_KERNEL].num_allocated++;
-	vc4->bo_labels[VC4_BO_TYPE_KERNEL].size_allocated += size;
+	bo->label = type;
+	vc4->bo_labels[type].num_allocated++;
+	vc4->bo_labels[type].size_allocated += size;
 
 	bo->base.funcs = &vc4_gem_object_funcs;
 
 out:
 	mutex_unlock(&vc4->bo_lock);
 
-	return IS_ERR(bo) ? (void *) bo : &bo->base;
+	return bo;
 }
 
 struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
@@ -669,24 +661,21 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 {
 	size_t size = roundup(unaligned_size, PAGE_SIZE);
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
-	struct drm_gem_object *gem_obj;
 	struct vc4_bo *bo;
 	int ret;
 
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
-	gem_obj = dev->driver->gem_create_object(dev, size);
-	if (!gem_obj)
+	bo = alloc_bo(vc4, size, type);
+	if (!bo)
 		return ERR_PTR(-ENOMEM);
 
-	bo = to_vc4_bo(gem_obj);
-
-	ret = drm_gem_object_init(dev, gem_obj, size);
+	ret = drm_gem_object_init(dev, &bo->base, size);
 	if (ret)
 		goto error;
 
-	ret = drm_gem_create_mmap_offset(gem_obj);
+	ret = drm_gem_create_mmap_offset(&bo->base);
 	if (ret)
 		goto error;
 
@@ -695,10 +684,6 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	 * BOs).
 	 */
 	bo->madv = __VC4_MADV_NOTSUPP;
-
-	mutex_lock(&vc4->bo_lock);
-	vc4_bo_set_label(&bo->base, type);
-	mutex_unlock(&vc4->bo_lock);
 
 	return bo;
 

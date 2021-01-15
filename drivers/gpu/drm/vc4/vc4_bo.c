@@ -1127,11 +1127,18 @@ vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
 
 	bo->madv = VC4_MADV_WILLNEED;
 
+	/* Make sure the buffer doesn’t get paged out while we are
+	 * copying data into it and validating it.
+	 */
+	ret = vc4_bo_inc_usecnt(bo);
+	if (ret)
+		goto fail;
+
 	if (copy_from_user(vc4_bo_get_vaddr(&bo->base),
 			     (void __user *)(uintptr_t)args->data,
 			     args->size)) {
 		ret = -EFAULT;
-		goto fail;
+		goto fail_usecnt;
 	}
 	/* Clear the rest of the memory from allocating from the BO
 	 * cache.
@@ -1142,13 +1149,16 @@ vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
 	bo->validated_shader = vc4_validate_shader(&bo->base);
 	if (!bo->validated_shader) {
 		ret = -EINVAL;
-		goto fail;
+		goto fail_usecnt;
 	}
 
 	/* We have to create the handle after validation, to avoid
 	 * races for users to do doing things like mmap the shader BO.
 	 */
 	ret = drm_gem_handle_create(file_priv, &bo->base, &args->handle);
+
+fail_usecnt:
+	vc4_bo_dec_usecnt(bo);
 
 fail:
 	drm_gem_object_put(&bo->base);

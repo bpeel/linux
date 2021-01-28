@@ -599,6 +599,7 @@ get_insertion_point_or_wait(struct vc4_dev *vc4,
 
 static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 			       size_t size,
+			       bool allow_unzeroed,
 			       enum vc4_kernel_bo_type type)
 {
 	struct vc4_bo *bo;
@@ -617,6 +618,9 @@ static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 		bo = ERR_PTR(-ENOMEM);
 		goto out;
 	}
+
+	if (!allow_unzeroed)
+		memset(vc4->cma_pool.vaddr + offset, 0, size);
 
 	bo->offset = offset;
 	bo->base.size = size;
@@ -648,7 +652,7 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
-	bo = alloc_bo(vc4, size, type);
+	bo = alloc_bo(vc4, size, allow_unzeroed, type);
 	if (!bo)
 		return ERR_PTR(-ENOMEM);
 

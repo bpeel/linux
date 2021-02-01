@@ -248,6 +248,7 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 	while (true) {
 		struct vc4_bo *bo = vc4_bo_create(&vc4->base, size, true,
 						  VC4_BO_TYPE_BIN);
+		dma_addr_t paddr = vc4_bo_get_paddr(&bo->base.base);
 
 		if (IS_ERR(bo)) {
 			ret = PTR_ERR(bo);
@@ -261,8 +262,8 @@ static int bin_bo_alloc(struct vc4_dev *vc4)
 		}
 
 		/* Check if this BO won't trigger the addressing bug. */
-		if ((bo->base.paddr & 0xf0000000) ==
-		    ((bo->base.paddr + bo->base.base.size - 1) & 0xf0000000)) {
+		if ((paddr & 0xf0000000) ==
+		    ((paddr + bo->base.base.size - 1) & 0xf0000000)) {
 			vc4->bin_bo = bo;
 
 			/* Set up for allocating 512KB chunks of

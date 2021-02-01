@@ -11,11 +11,14 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_debugfs.h>
+#include <drm/drm_file.h>
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
+#include <drm/drm_gem.h>
 #include <drm/drm_modeset_lock.h>
 
 #include "uapi/drm/vc4_drm.h"
@@ -89,6 +92,23 @@ struct vc4_dev {
 
 	struct vc4_hang_state *hang_state;
 
+	struct {
+		/* Addresses for the single contiguous buffer
+		 * containing the pool
+		 */
+		dma_addr_t paddr;
+		void *vaddr;
+
+		/* Buffers that are in the pool, in order of when they
+		 * were last used (most-recent first).
+		 */
+		struct list_head mru_buffers;
+		/* Buffers that are in the pool, in the order of their
+		 * offset.
+		 */
+		struct list_head offset_buffers;
+	} cma_pool;
+
 	u32 num_labels;
 	struct vc4_label {
 		const char *name;
@@ -96,7 +116,7 @@ struct vc4_dev {
 		u32 size_allocated;
 	} *bo_labels;
 
-	/* Protects bo_labels */
+	/* Protects bo_labels and cma_pool */
 	struct mutex bo_lock;
 
 	/* Purgeable BO pool. All BOs in this pool can have their memory
@@ -233,7 +253,7 @@ to_vc4_dev(struct drm_device *dev)
 }
 
 struct vc4_bo {
-	struct drm_gem_cma_object base;
+	struct drm_gem_shmem_object base;
 
 	/* seqno of the last job to render using this BO. */
 	uint64_t seqno;
@@ -252,9 +272,32 @@ struct vc4_bo {
 	 */
 	struct list_head unref_head;
 
+	/* Link within cma_pool.mru_buffers */
+	struct list_head mru_buffers_head;
+	/* Link within cma_pool.offset_buffers */
+	struct list_head offset_buffers_head;
 
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
+
+	/* If true then user-space has accessed the shmem backing of
+	 * the buffer since the last time we copied it into the CMA
+	 * pool and it needs to copied again.
+	 */
+	bool shmem_copy_dirty;
+	/* If true then the copy of the buffer in the CMA pool has
+	 * been used for writing since the last time it was copied
+	 * back to the shmem backing and we need to copy it again.
+	 */
+	bool cma_copy_dirty;
+
+	/* Whether the buffer is currently paged into the CMA pool */
+	bool paged_in;
+
+	/* Offset within the CMA bool buffer when the buffer is paged
+	 * in.
+	 */
+	size_t offset;
 
 	/* Struct for shader validation state, if created by
 	 * DRM_IOCTL_VC4_CREATE_SHADER_BO.
@@ -280,7 +323,7 @@ struct vc4_bo {
 static inline struct vc4_bo *
 to_vc4_bo(struct drm_gem_object *bo)
 {
-	return container_of(to_drm_gem_cma_obj(bo), struct vc4_bo, base);
+	return container_of(to_drm_gem_shmem_obj(bo), struct vc4_bo, base);
 }
 
 struct vc4_fence {
@@ -563,14 +606,14 @@ struct vc4_exec_info {
 	/* This is the array of BOs that were looked up at the start of exec.
 	 * Command validation will use indices into this array.
 	 */
-	struct drm_gem_cma_object **bo;
+	struct drm_gem_object **bo;
 	uint32_t bo_count;
 
 	/* List of BOs that are being written by the RCL.  Other than
 	 * the binner temporary storage, this is all the BOs written
 	 * by the job.
 	 */
-	struct drm_gem_cma_object *rcl_write_bo[4];
+	struct drm_gem_object *rcl_write_bo[4];
 	uint32_t rcl_write_bo_count;
 
 	/* Pointers for our position in vc4->job_list */
@@ -589,7 +632,7 @@ struct vc4_exec_info {
 	/* This is the BO where we store the validated command lists, shader
 	 * records, and uniforms.
 	 */
-	struct drm_gem_cma_object *exec_bo;
+	struct drm_gem_object *exec_bo;
 
 	/**
 	 * This tracks the per-shader-record state (packet 64) that
@@ -802,12 +845,16 @@ int vc4_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
 struct drm_gem_object *vc4_prime_import_sg_table(struct drm_device *dev,
 						 struct dma_buf_attachment *attach,
 						 struct sg_table *sgt);
-int vc4_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map);
 int vc4_bo_labels_init(struct drm_device *dev);
+int vc4_bo_cma_pool_init(struct vc4_dev *vc4);
 int vc4_bo_inc_usecnt(struct vc4_bo *bo);
 void vc4_bo_dec_usecnt(struct vc4_bo *bo);
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo);
 void vc4_bo_remove_from_purgeable_pool(struct vc4_bo *bo);
+int vc4_bo_use(struct vc4_bo *bo);
+void vc4_bo_written_to_by_device(struct vc4_bo *bo);
+dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj);
+void *vc4_bo_get_vaddr(struct drm_gem_object *obj);
 
 /* vc4_crtc.c */
 extern struct platform_driver vc4_crtc_driver;
@@ -950,19 +997,19 @@ vc4_validate_bin_cl(struct drm_device *dev,
 int
 vc4_validate_shader_recs(struct drm_device *dev, struct vc4_exec_info *exec);
 
-struct drm_gem_cma_object *vc4_use_bo(struct vc4_exec_info *exec,
-				      uint32_t hindex);
+struct drm_gem_object *vc4_use_bo(struct vc4_exec_info *exec,
+				  uint32_t hindex);
 
 int vc4_get_rcl(struct drm_device *dev, struct vc4_exec_info *exec);
 
 bool vc4_check_tex_size(struct vc4_exec_info *exec,
-			struct drm_gem_cma_object *fbo,
+			struct drm_gem_object *fbo,
 			uint32_t offset, uint8_t tiling_format,
 			uint32_t width, uint32_t height, uint8_t cpp);
 
 /* vc4_validate_shader.c */
 struct vc4_validated_shader_info *
-vc4_validate_shader(struct drm_gem_cma_object *shader_obj);
+vc4_validate_shader(struct drm_gem_object *shader_obj);
 
 /* vc4_perfmon.c */
 void vc4_perfmon_get(struct vc4_perfmon *perfmon);

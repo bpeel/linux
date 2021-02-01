@@ -338,7 +338,7 @@ static int vc4_plane_setup_clipping_and_scaling(struct drm_plane_state *state)
 {
 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
 	struct drm_framebuffer *fb = state->fb;
-	struct drm_gem_cma_object *bo = drm_fb_cma_get_gem_obj(fb, 0);
+	struct drm_gem_object *gem_obj = drm_gem_fb_get_obj(fb, 0);
 	u32 subpixel_src_mask = (1 << 16) - 1;
 	int num_planes = fb->format->num_planes;
 	struct drm_crtc_state *crtc_state;
@@ -358,8 +358,10 @@ static int vc4_plane_setup_clipping_and_scaling(struct drm_plane_state *state)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < num_planes; i++)
-		vc4_state->offsets[i] = bo->paddr + fb->offsets[i];
+	for (i = 0; i < num_planes; i++) {
+		dma_addr_t paddr = vc4_bo_get_paddr(gem_obj);
+		vc4_state->offsets[i] = paddr + fb->offsets[i];
+	}
 
 	/* We don't support subpixel source positioning for scaling. */
 	if ((state->src.x1 & subpixel_src_mask) ||
@@ -1189,14 +1191,14 @@ u32 vc4_plane_dlist_size(const struct drm_plane_state *state)
 void vc4_plane_async_set_fb(struct drm_plane *plane, struct drm_framebuffer *fb)
 {
 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(plane->state);
-	struct drm_gem_cma_object *bo = drm_fb_cma_get_gem_obj(fb, 0);
+	struct drm_gem_object *gem_obj = drm_gem_fb_get_obj(fb, 0);
 	uint32_t addr;
 
 	/* We're skipping the address adjustment for negative origin,
 	 * because this is only called on the primary plane.
 	 */
 	WARN_ON_ONCE(plane->state->crtc_x < 0 || plane->state->crtc_y < 0);
-	addr = bo->paddr + fb->offsets[0];
+	addr = vc4_bo_get_paddr(gem_obj) + fb->offsets[0];
 
 	/* Write the new address into the hardware immediately.  The
 	 * scanout will start from this address as soon as the FIFO
@@ -1327,7 +1329,7 @@ static int vc4_prepare_fb(struct drm_plane *plane,
 	if (!state->fb)
 		return 0;
 
-	bo = to_vc4_bo(&drm_fb_cma_get_gem_obj(state->fb, 0)->base);
+	bo = to_vc4_bo(drm_gem_fb_get_obj(state->fb, 0));
 
 	drm_gem_fb_prepare_fb(plane, state);
 
@@ -1349,7 +1351,7 @@ static void vc4_cleanup_fb(struct drm_plane *plane,
 	if (plane->state->fb == state->fb || !state->fb)
 		return;
 
-	bo = to_vc4_bo(&drm_fb_cma_get_gem_obj(state->fb, 0)->base);
+	bo = to_vc4_bo(drm_gem_fb_get_obj(state->fb, 0));
 	vc4_bo_dec_usecnt(bo);
 }
 

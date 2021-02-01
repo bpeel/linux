@@ -35,6 +35,7 @@
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_vblank.h>
+#include <drm/drm_ioctl.h>
 
 #include "uapi/drm/vc4_drm.h"
 
@@ -281,7 +282,11 @@ static int vc4_drm_bind(struct device *dev)
 
 	mutex_init(&vc4->bin_bo_lock);
 
-	ret = vc4_bo_cache_init(drm);
+	ret = vc4_bo_labels_init(drm);
+	if (ret)
+		return ret;
+
+	ret = vc4_bo_cma_pool_init(vc4);
 	if (ret)
 		return ret;
 
@@ -331,6 +336,9 @@ unbind_all:
 static void vc4_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
+	struct vc4_dev *vc4 = to_vc4_dev(drm);
+
+	vc4_bo_cma_pool_destroy(vc4);
 
 	drm_dev_unregister(drm);
 

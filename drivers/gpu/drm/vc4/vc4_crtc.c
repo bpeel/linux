@@ -40,6 +40,7 @@
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 
 #include "vc4_drv.h"
 #include "vc4_regs.h"
@@ -719,11 +720,11 @@ vc4_async_page_flip_complete(struct vc4_seqno_cb *cb)
 	 * logic.
 	 */
 	if (flip_state->old_fb) {
-		struct drm_gem_cma_object *cma_bo;
+		struct drm_gem_object *gem_obj;
 		struct vc4_bo *bo;
 
-		cma_bo = drm_fb_cma_get_gem_obj(flip_state->old_fb, 0);
-		bo = to_vc4_bo(&cma_bo->base);
+		gem_obj = drm_gem_fb_get_obj(flip_state->old_fb, 0);
+		bo = to_vc4_bo(gem_obj);
 		vc4_bo_dec_usecnt(bo);
 		drm_framebuffer_put(flip_state->old_fb);
 	}
@@ -749,8 +750,8 @@ static int vc4_async_page_flip(struct drm_crtc *crtc,
 	struct drm_plane *plane = crtc->primary;
 	int ret = 0;
 	struct vc4_async_flip_state *flip_state;
-	struct drm_gem_cma_object *cma_bo = drm_fb_cma_get_gem_obj(fb, 0);
-	struct vc4_bo *bo = to_vc4_bo(&cma_bo->base);
+	struct drm_gem_object *gem_obj = drm_gem_fb_get_obj(fb, 0);
+	struct vc4_bo *bo = to_vc4_bo(gem_obj);
 
 	/* Increment the BO usecnt here, so that we never end up with an
 	 * unbalanced number of vc4_bo_{dec,inc}_usecnt() calls when the

@@ -518,6 +518,9 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 	list_add(&bo->offset_buffers_head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
+	/* Invalidate any user-space mappings */
+	drm_vma_node_unmap(&bo->base.vma_node, vc4->base.anon_inode->i_mapping);
+
 	return true;
 }
 
@@ -878,7 +881,6 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	struct vc4_bo *bo = to_vc4_bo(obj);
 	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
 	vm_fault_t ret = 0;
-	int mmap_ret;
 
 	/* Purged buffers can’t be paged in */
 	mutex_lock(&bo->madv_lock);
@@ -896,37 +898,37 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	mutex_lock(&vc4->bo_lock);
 
 	if (bo->buffer_copy) {
-		DRM_INFO("Got page fault for paged out buffer %p %s\n",
-			 bo,
-			 vc4->bo_labels[bo->label].name);
-	}
+		void *vaddr = bo->buffer_copy + (vmf->address - vma->vm_start);
+		unsigned long pfn = vmalloc_to_pfn(vaddr);
 
-	if (use_bo_unlocked(bo))
-		ret = VM_FAULT_OOM;
-	else
-		mmap_ret = mmap_pgoff_dance(vma, obj);
+		ret = vmf_insert_pfn(vma, vmf->address, pfn);
+	} else {
+		int mmap_ret = mmap_pgoff_dance(vma, obj);
+
+		switch (mmap_ret) {
+		case EAGAIN:
+			DRM_INFO("Got EGAIN for mmap_pgoff_dance for %p %s\n",
+				 bo,
+				 vc4->bo_labels[bo->label].name);
+			ret = VM_FAULT_NOPAGE;
+			break;
+		case 0:
+			ret = VM_FAULT_NOPAGE;
+			break;
+		default:
+			DRM_ERROR("Got unknown error %i for mmap_pgoff_dance "
+				  "for %p %s\n",
+				  mmap_ret,
+				  bo,
+				  vc4->bo_labels[bo->label].name);
+			ret = VM_FAULT_OOM;
+			break;
+		}
+	}
 
 	mutex_unlock(&vc4->bo_lock);
 
-	if (ret)
-		return ret;
-
-	switch (mmap_ret) {
-	case EAGAIN:
-		DRM_INFO("Got EGAIN for mmap_pgoff_dance for %p %s\n",
-			 bo,
-			 vc4->bo_labels[bo->label].name);
-		return VM_FAULT_NOPAGE;
-	case 0:
-		return VM_FAULT_NOPAGE;
-	default:
-		DRM_ERROR("Got unknown error %i for mmap_pgoff_dance "
-			  "for %p %s\n",
-			  mmap_ret,
-			  bo,
-			  vc4->bo_labels[bo->label].name);
-		return VM_FAULT_OOM;
-	}
+	return ret;
 }
 
 int vc4_mmap(struct file *filp, struct vm_area_struct *vma)
@@ -956,10 +958,6 @@ int vc4_mmap(struct file *filp, struct vm_area_struct *vma)
 		return -EINVAL;
 	}
 
-	ret = vc4_bo_use(bo);
-	if (ret)
-		return ret;
-
 	/*
 	 * Clear the VM_PFNMAP flag that was set by drm_gem_mmap(), and set the
 	 * vm_pgoff (used as a fake buffer offset by DRM) to 0 as we want to map
@@ -967,7 +965,12 @@ int vc4_mmap(struct file *filp, struct vm_area_struct *vma)
 	 */
 	vma->vm_flags &= ~VM_PFNMAP;
 
-	ret = mmap_pgoff_dance(vma, gem_obj);
+	mutex_lock(&vc4->bo_lock);
+
+	if (bo->buffer_copy == NULL)
+		ret = mmap_pgoff_dance(vma, gem_obj);
+
+	mutex_unlock(&vc4->bo_lock);
 
 	if (ret)
 		drm_gem_vm_close(vma);

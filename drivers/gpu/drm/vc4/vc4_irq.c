@@ -101,10 +101,10 @@ vc4_overflow_mem_work(struct work_struct *work)
 	}
 	vc4->bin_alloc_overflow = BIT(bin_bo_slot);
 
-	paddr = vc4_bo_get_paddr(&bo->base);
+	paddr = vc4_bo_get_paddr(&bo->base.base);
 
 	V3D_WRITE(V3D_BPOA, paddr + bin_bo_slot * vc4->bin_alloc_size);
-	V3D_WRITE(V3D_BPOS, bo->base.size);
+	V3D_WRITE(V3D_BPOS, bo->base.base.size);
 	V3D_WRITE(V3D_INTCTL, V3D_INT_OUTOMEM);
 	V3D_WRITE(V3D_INTENA, V3D_INT_OUTOMEM);
 	spin_unlock_irqrestore(&vc4->job_lock, irqflags);

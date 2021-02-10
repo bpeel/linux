@@ -15,6 +15,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
 #include <drm/drm_gem.h>
@@ -240,7 +241,7 @@ to_vc4_dev(struct drm_device *dev)
 }
 
 struct vc4_bo {
-	struct drm_gem_object base;
+	struct drm_gem_shmem_object base;
 
 	/* seqno of the last job to render using this BO. */
 	uint64_t seqno;
@@ -301,7 +302,7 @@ struct vc4_bo {
 static inline struct vc4_bo *
 to_vc4_bo(struct drm_gem_object *bo)
 {
-	return container_of(bo, struct vc4_bo, base);
+	return container_of(to_drm_gem_shmem_obj(bo), struct vc4_bo, base);
 }
 
 struct vc4_fence {

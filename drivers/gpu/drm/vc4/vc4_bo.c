@@ -172,7 +172,7 @@ static void vc4_bo_remove_from_pool(struct vc4_bo *bo)
 
 static void vc4_bo_destroy(struct vc4_bo *bo)
 {
-	struct drm_gem_object *obj = &bo->base;
+	struct drm_gem_object *obj = &bo->base.base;
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
 
 	if (bo->validated_shader) {
@@ -198,18 +198,18 @@ static void vc4_bo_destroy(struct vc4_bo *bo)
 
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 
 	mutex_lock(&vc4->purgeable.lock);
 	list_add_tail(&bo->purgeable_head, &vc4->purgeable.list);
 	vc4->purgeable.num++;
-	vc4->purgeable.size += bo->base.size;
+	vc4->purgeable.size += bo->base.base.size;
 	mutex_unlock(&vc4->purgeable.lock);
 }
 
 static void vc4_bo_remove_from_purgeable_pool_locked(struct vc4_bo *bo)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 
 	/* list_del_init() is used here because the caller might release
 	 * the purgeable lock in order to acquire the madv one and update the
@@ -225,12 +225,12 @@ static void vc4_bo_remove_from_purgeable_pool_locked(struct vc4_bo *bo)
 	 */
 	list_del_init(&bo->purgeable_head);
 	vc4->purgeable.num--;
-	vc4->purgeable.size -= bo->base.size;
+	vc4->purgeable.size -= bo->base.base.size;
 }
 
 void vc4_bo_remove_from_purgeable_pool(struct vc4_bo *bo)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 
 	mutex_lock(&vc4->purgeable.lock);
 	vc4_bo_remove_from_purgeable_pool_locked(bo);
@@ -261,7 +261,7 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 		struct vc4_bo *bo = list_first_entry(&vc4->purgeable.list,
 						     struct vc4_bo,
 						     purgeable_head);
-		struct drm_gem_object *obj = &bo->base;
+		struct drm_gem_object *obj = &bo->base.base;
 		size_t purged_size = 0;
 
 		vc4_bo_remove_from_purgeable_pool_locked(bo);
@@ -286,7 +286,7 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 		if (bo->madv == VC4_MADV_DONTNEED &&
 		    list_empty(&bo->purgeable_head) &&
 		    !refcount_read(&bo->usecnt)) {
-			purged_size = bo->base.size;
+			purged_size = bo->base.base.size;
 			vc4_bo_purge(obj);
 		}
 		mutex_unlock(&bo->madv_lock);
@@ -302,22 +302,22 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 
 static bool page_out_buffer(struct vc4_bo *buf)
 {
-	struct drm_gem_object *obj = &buf->base;
+	struct drm_gem_object *obj = &buf->base.base;
 	struct drm_device *dev = obj->dev;
-	void *vaddr = vc4_bo_get_vaddr(&buf->base);
+	void *vaddr = vc4_bo_get_vaddr(&buf->base.base);
 
 	WARN_ON(buf->buffer_copy != NULL);
 
-	DRM_INFO("Paging out buffer of size %zu\n", buf->base.size);
+	DRM_INFO("Paging out buffer of size %zu\n", buf->base.base.size);
 
-	buf->buffer_copy = vmalloc(buf->base.size);
+	buf->buffer_copy = vmalloc(buf->base.base.size);
 
 	if (buf->buffer_copy == NULL)
 		return false;
 
 	memcpy(buf->buffer_copy,
 	       vaddr,
-	       buf->base.size);
+	       buf->base.base.size);
 
 	list_del(&buf->mru_buffers_head);
 	list_del(&buf->offset_buffers_head);
@@ -338,7 +338,7 @@ static bool is_unmovable_buffer(struct vc4_dev *vc4,
 	/* Don’t page out the dumb framebuffer */
 	if (vc4->base.fb_helper &&
 	    vc4->base.fb_helper->buffer &&
-	    &bo->base == vc4->base.fb_helper->buffer->gem)
+	    &bo->base.base == vc4->base.fb_helper->buffer->gem)
 		return true;
 
 	return false;
@@ -394,7 +394,8 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 				container_of(buffer->offset_buffers_head.prev,
 					     struct vc4_bo,
 					     offset_buffers_head);
-			offset = prev_buffer->offset + prev_buffer->base.size;
+			offset = (prev_buffer->offset +
+				  prev_buffer->base.base.size);
 			prev = &prev_buffer->offset_buffers_head;
 		}
 
@@ -442,7 +443,7 @@ static bool get_insertion_point(struct vc4_dev *drv,
 		}
 
 		prev = &bo->offset_buffers_head;
-		offset = bo->offset + bo->base.size;
+		offset = bo->offset + bo->base.base.size;
 	}
 
 	/* There still might be enough space after the last buffer, or
@@ -502,14 +503,17 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 
 	lockdep_assert_held(&vc4->bo_lock);
 
-	DRM_INFO("Paging in buffer of size %zu\n", bo->base.size);
+	DRM_INFO("Paging in buffer of size %zu\n", bo->base.base.size);
 
-	if (!get_insertion_point_or_free(vc4, bo->base.size, &offset, &prev))
+	if (!get_insertion_point_or_free(vc4,
+					 bo->base.base.size,
+					 &offset,
+					 &prev))
 		return false;
 
 	memcpy((uint8_t *) vc4->cma_pool.vaddr + offset,
 	       bo->buffer_copy,
-	       bo->base.size);
+	       bo->base.base.size);
 
 	bo->offset = offset;
 	vfree(bo->buffer_copy);
@@ -523,7 +527,7 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 
 static int use_bo_unlocked(struct vc4_bo *bo)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 
 	lockdep_assert_held(&vc4->bo_lock);
 
@@ -640,7 +644,7 @@ static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 		memset(vc4->cma_pool.vaddr + offset, 0, size);
 
 	bo->offset = offset;
-	bo->base.size = size;
+	bo->base.base.size = size;
 	bo->buffer_copy = NULL;
 	list_add(&bo->offset_buffers_head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
@@ -652,7 +656,7 @@ static struct vc4_bo *alloc_bo(struct vc4_dev *vc4,
 	vc4->bo_labels[type].num_allocated++;
 	vc4->bo_labels[type].size_allocated += size;
 
-	bo->base.funcs = &vc4_gem_object_funcs;
+	bo->base.base.funcs = &vc4_gem_object_funcs;
 
 out:
 	mutex_unlock(&vc4->bo_lock);
@@ -675,11 +679,11 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	if (!bo)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_gem_object_init(dev, &bo->base, size);
+	ret = drm_gem_object_init(dev, &bo->base.base, size);
 	if (ret)
 		goto error;
 
-	ret = drm_gem_create_mmap_offset(&bo->base);
+	ret = drm_gem_create_mmap_offset(&bo->base.base);
 	if (ret)
 		goto error;
 
@@ -716,8 +720,8 @@ int vc4_dumb_create(struct drm_file *file_priv,
 
 	bo->madv = VC4_MADV_WILLNEED;
 
-	ret = drm_gem_handle_create(file_priv, &bo->base, &args->handle);
-	drm_gem_object_put(&bo->base);
+	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
+	drm_gem_object_put(&bo->base.base);
 
 	return ret;
 }
@@ -876,7 +880,7 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct drm_gem_object *obj = vma->vm_private_data;
 	struct vc4_bo *bo = to_vc4_bo(obj);
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 	vm_fault_t ret = 0;
 	int mmap_ret;
 
@@ -990,7 +994,7 @@ int vc4_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
 
 int vc4_bo_use(struct vc4_bo *bo)
 {
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.dev);
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 	int ret;
 
 	mutex_lock(&vc4->bo_lock);
@@ -1070,8 +1074,8 @@ int vc4_create_bo_ioctl(struct drm_device *dev, void *data,
 
 	bo->madv = VC4_MADV_WILLNEED;
 
-	ret = drm_gem_handle_create(file_priv, &bo->base, &args->handle);
-	drm_gem_object_put(&bo->base);
+	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
+	drm_gem_object_put(&bo->base.base);
 
 	return ret;
 }
@@ -1138,7 +1142,7 @@ vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
 	if (ret)
 		goto fail;
 
-	if (copy_from_user(vc4_bo_get_vaddr(&bo->base),
+	if (copy_from_user(vc4_bo_get_vaddr(&bo->base.base),
 			     (void __user *)(uintptr_t)args->data,
 			     args->size)) {
 		ret = -EFAULT;
@@ -1147,10 +1151,10 @@ vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
 	/* Clear the rest of the memory from allocating from the BO
 	 * cache.
 	 */
-	memset(vc4_bo_get_vaddr(&bo->base) + args->size, 0,
-	       bo->base.size - args->size);
+	memset(vc4_bo_get_vaddr(&bo->base.base) + args->size, 0,
+	       bo->base.base.size - args->size);
 
-	bo->validated_shader = vc4_validate_shader(&bo->base);
+	bo->validated_shader = vc4_validate_shader(&bo->base.base);
 	if (!bo->validated_shader) {
 		ret = -EINVAL;
 		goto fail_usecnt;
@@ -1159,13 +1163,13 @@ vc4_create_shader_bo_ioctl(struct drm_device *dev, void *data,
 	/* We have to create the handle after validation, to avoid
 	 * races for users to do doing things like mmap the shader BO.
 	 */
-	ret = drm_gem_handle_create(file_priv, &bo->base, &args->handle);
+	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
 
 fail_usecnt:
 	vc4_bo_dec_usecnt(bo);
 
 fail:
-	drm_gem_object_put(&bo->base);
+	drm_gem_object_put(&bo->base.base);
 
 	return ret;
 }
@@ -1394,7 +1398,7 @@ uint32_t vc4_get_pool_size(struct vc4_dev *vc4)
 			    &vc4->cma_pool.offset_buffers,
 			    offset_buffers_head) {
 		if (is_unmovable_buffer(vc4, bo))
-			size -= bo->base.size;
+			size -= bo->base.base.size;
 	}
 
 	mutex_unlock(&vc4->bo_lock);

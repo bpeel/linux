@@ -392,7 +392,7 @@ validate_tile_binning_config(VALIDATE_ARGS)
 	 * free when the job completes rendering.
 	 */
 	exec->bin_slots |= BIT(bin_slot);
-	bin_addr = (vc4_bo_get_paddr(&vc4->bin_bo->base) +
+	bin_addr = (vc4_bo_get_paddr(&vc4->bin_bo->base.base) +
 		    bin_slot * vc4->bin_alloc_size);
 
 	/* The tile state data array is 48 bytes per tile, and we put it at

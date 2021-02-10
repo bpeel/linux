@@ -123,8 +123,8 @@ vc4_get_hang_state_ioctl(struct drm_device *dev, void *data,
 			goto err_delete_handle;
 		}
 		bo_state[i].handle = handle;
-		bo_state[i].paddr = vc4_bo_get_paddr(&vc4_bo->base);
-		bo_state[i].size = vc4_bo->base.size;
+		bo_state[i].paddr = vc4_bo_get_paddr(&vc4_bo->base.base);
+		bo_state[i].size = vc4_bo->base.base.size;
 	}
 
 	if (copy_to_user(u64_to_user_ptr(get_state->bo),
@@ -212,8 +212,8 @@ vc4_save_hang_state(struct drm_device *dev)
 			/* No need to retain BOs coming from the ->unref_list
 			 * because they are naturally unpurgeable.
 			 */
-			drm_gem_object_get(&bo->base);
-			kernel_state->bo[k++] = &bo->base;
+			drm_gem_object_get(&bo->base.base);
+			kernel_state->bo[k++] = &bo->base.base;
 		}
 	}
 
@@ -543,7 +543,7 @@ vc4_update_bo_seqnos(struct vc4_exec_info *exec, uint64_t seqno)
 		bo = to_vc4_bo(exec->bo[i]);
 		bo->seqno = seqno;
 
-		dma_resv_add_shared_fence(bo->base.resv, exec->fence);
+		dma_resv_add_shared_fence(bo->base.base.resv, exec->fence);
 	}
 
 	list_for_each_entry(bo, &exec->unref_list, unref_head) {
@@ -554,7 +554,7 @@ vc4_update_bo_seqnos(struct vc4_exec_info *exec, uint64_t seqno)
 		bo = to_vc4_bo(exec->rcl_write_bo[i]);
 		bo->write_seqno = seqno;
 
-		dma_resv_add_excl_fence(bo->base.resv, exec->fence);
+		dma_resv_add_excl_fence(bo->base.base.resv, exec->fence);
 	}
 }
 
@@ -894,10 +894,10 @@ vc4_get_bcl(struct drm_device *dev, struct vc4_exec_info *exec)
 		ret = PTR_ERR(bo);
 		goto fail;
 	}
-	exec->exec_bo = &bo->base;
+	exec->exec_bo = &bo->base.base;
 
-	vaddr = vc4_bo_get_vaddr(&bo->base);
-	paddr = vc4_bo_get_paddr(&bo->base);
+	vaddr = vc4_bo_get_vaddr(&bo->base.base);
+	paddr = vc4_bo_get_paddr(&bo->base.base);
 
 	list_add_tail(&to_vc4_bo(exec->exec_bo)->unref_head,
 		      &exec->unref_list);
@@ -971,7 +971,7 @@ vc4_complete_exec(struct drm_device *dev, struct vc4_exec_info *exec)
 		struct vc4_bo *bo = list_first_entry(&exec->unref_list,
 						     struct vc4_bo, unref_head);
 		list_del(&bo->unref_head);
-		drm_gem_object_put(&bo->base);
+		drm_gem_object_put(&bo->base.base);
 	}
 
 	/* Free up the allocation of any bin slots we used. */
@@ -1307,7 +1307,7 @@ static void vc4_gem_destroy(struct drm_device *dev, void *unused)
 	 * the overflow allocation registers.  Now free the object.
 	 */
 	if (vc4->bin_bo) {
-		drm_gem_object_put(&vc4->bin_bo->base);
+		drm_gem_object_put(&vc4->bin_bo->base.base);
 		vc4->bin_bo = NULL;
 	}
 

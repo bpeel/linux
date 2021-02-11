@@ -30,6 +30,10 @@ struct drm_gem_object;
  * this.
  */
 enum vc4_kernel_bo_type {
+	/* Any kernel allocation (gem_create_object hook) before it
+	 * gets another type set.
+	 */
+	VC4_BO_TYPE_KERNEL,
 	VC4_BO_TYPE_V3D,
 	VC4_BO_TYPE_V3D_SHADER,
 	VC4_BO_TYPE_DUMB,
@@ -268,15 +272,13 @@ struct vc4_bo {
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
 
+	/* Whether the buffer is currently paged into the CMA pool */
+	bool paged_in;
+
 	/* Offset within the CMA bool buffer when the buffer is paged
 	 * in.
 	 */
 	size_t offset;
-
-	/* Pointer to a copy of the data in vmalloc’d memory when the
-	 * buffer is paged out.
-	 */
-	void *buffer_copy;
 
 	/* Struct for shader validation state, if created by
 	 * DRM_IOCTL_VC4_CREATE_SHADER_BO.
@@ -823,7 +825,6 @@ int vc4_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
 struct drm_gem_object *vc4_prime_import_sg_table(struct drm_device *dev,
 						 struct dma_buf_attachment *attach,
 						 struct sg_table *sgt);
-int vc4_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map);
 int vc4_bo_labels_init(struct drm_device *dev);
 void vc4_bo_labels_destroy(struct drm_device *dev);
 int vc4_bo_cma_pool_init(struct vc4_dev *vc4);

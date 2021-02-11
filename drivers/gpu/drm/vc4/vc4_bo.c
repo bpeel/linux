@@ -163,6 +163,7 @@ static void vc4_bo_remove_from_pool(struct vc4_bo *bo)
 	if (bo->paged_in) {
 		list_del(&bo->mru_buffers_head);
 		list_del(&bo->offset_buffers_head);
+		bo->paged_in = false;
 	}
 }
 
@@ -315,8 +316,7 @@ static int page_out_buffer(struct vc4_bo *bo)
 
 	drm_gem_shmem_vunmap(&bo->base.base, &map);
 
-	list_del(&bo->mru_buffers_head);
-	list_del(&bo->offset_buffers_head);
+	vc4_bo_remove_from_pool(bo);
 
 	return 0;
 }

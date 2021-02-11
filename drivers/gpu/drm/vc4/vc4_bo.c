@@ -294,7 +294,7 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 	mutex_unlock(&vc4->purgeable.lock);
 }
 
-static bool page_out_buffer(struct vc4_bo *bo)
+static int page_out_buffer(struct vc4_bo *bo)
 {
 	void *vaddr = vc4_bo_get_vaddr(&bo->base.base);
 	struct dma_buf_map map;
@@ -308,7 +308,7 @@ static bool page_out_buffer(struct vc4_bo *bo)
 	if (ret) {
 		DRM_INFO("Map failed for shmem of buffer of size %zu\n",
 			 bo->base.base.size);
-		return false;
+		return ret;
 	}
 
 	memcpy(map.vaddr, vaddr, bo->base.base.size);
@@ -318,7 +318,7 @@ static bool page_out_buffer(struct vc4_bo *bo)
 	list_del(&bo->mru_buffers_head);
 	list_del(&bo->offset_buffers_head);
 
-	return true;
+	return 0;
 }
 
 static bool is_unmovable_buffer(struct vc4_dev *vc4,
@@ -392,7 +392,7 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 			prev = &prev_buffer->offset_buffers_head;
 		}
 
-		if (!page_out_buffer(buffer))
+		if (page_out_buffer(buffer))
 			continue;
 
 		if (prev->next == &vc4->cma_pool.offset_buffers) {
@@ -574,6 +574,110 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 	return 0;
 }
 
+static int page_out_buffer_or_wait(struct vc4_bo *bo)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
+	int ret = 0;
+
+	mutex_lock(&vc4->bo_lock);
+
+	while (bo->paged_in) {
+		if (refcount_read(&bo->usecnt)) {
+			/* Wait until a job completes and try again */
+			mutex_unlock(&vc4->bo_lock);
+			vc4_wait_for_seqno(&vc4->base,
+					   vc4->emit_seqno,
+					   ~0ull, /* timeout */
+					   false /* interruptible */);
+			flush_work(&vc4->job_done_work);
+			mutex_lock(&vc4->bo_lock);
+		} else {
+			ret = page_out_buffer(bo);
+			break;
+		}
+	}
+
+	mutex_unlock(&vc4->bo_lock);
+
+	return ret;
+}
+
+static vm_fault_t vc4_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct drm_gem_object *obj = vma->vm_private_data;
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
+	struct vc4_bo *bo = to_vc4_bo(obj);
+	loff_t num_pages = obj->size >> PAGE_SHIFT;
+	struct page *page;
+	int ret;
+
+	/* Purged buffers can’t be paged in */
+	mutex_lock(&bo->madv_lock);
+	if (bo->madv == __VC4_MADV_PURGED)
+		ret = VM_FAULT_SIGBUS;
+	mutex_unlock(&bo->madv_lock);
+
+	if (ret)
+		return ret;
+
+	ret = page_out_buffer_or_wait(bo);
+	if (ret)
+		return ret;
+
+	if (vmf->pgoff >= num_pages || WARN_ON_ONCE(!shmem->pages))
+		return VM_FAULT_SIGBUS;
+
+	page = shmem->pages[vmf->pgoff];
+
+	return vmf_insert_page(vma, vmf->address, page);
+}
+
+static void vc4_vm_open(struct vm_area_struct *vma)
+{
+	struct drm_gem_object *obj = vma->vm_private_data;
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
+	int ret;
+
+	WARN_ON(shmem->base.import_attach);
+
+	ret = drm_gem_shmem_get_pages(shmem);
+	WARN_ON_ONCE(ret != 0);
+
+	drm_gem_vm_open(vma);
+}
+
+static void vc4_vm_close(struct vm_area_struct *vma)
+{
+	struct drm_gem_object *obj = vma->vm_private_data;
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
+
+	drm_gem_shmem_put_pages(shmem);
+	drm_gem_vm_close(vma);
+}
+
+static const struct vm_operations_struct vc4_vm_ops = {
+	.fault = vc4_fault,
+	.open = vc4_vm_open,
+	.close = vc4_vm_close,
+};
+
+static int vc4_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
+{
+	int ret;
+
+	ret = drm_gem_shmem_mmap(obj, vma);
+	if (ret)
+		return ret;
+
+	/* Replace the vm_ops so that we can add a wrapper around the
+	 * page fault handler.
+	 */
+	vma->vm_ops = &vc4_vm_ops;
+
+	return ret;
+}
+
 static const struct drm_gem_object_funcs vc4_gem_object_funcs = {
 	.free = vc4_free_object,
 	.print_info = drm_gem_shmem_print_info,
@@ -582,7 +686,7 @@ static const struct drm_gem_object_funcs vc4_gem_object_funcs = {
 	.get_sg_table = drm_gem_shmem_get_sg_table,
 	.vmap = drm_gem_shmem_vmap,
 	.vunmap = drm_gem_shmem_vunmap,
-	.mmap = drm_gem_shmem_mmap,
+	.mmap = vc4_gem_mmap,
 };
 
 /**

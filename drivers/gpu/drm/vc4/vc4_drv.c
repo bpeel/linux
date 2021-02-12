@@ -192,6 +192,8 @@ static struct drm_driver vc4_drm_driver = {
 	.debugfs_init = vc4_debugfs_init,
 #endif
 
+	.gem_create_object = vc4_create_object,
+
 	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_import_sg_table = vc4_prime_import_sg_table,

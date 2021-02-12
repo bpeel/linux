@@ -751,10 +751,17 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 
 	vc4_bo_set_label(&shmem_obj->base, type);
 
-	page_in_ret = page_in_buffer(vc4, bo, false /* copy_from_shmem */);
+	/* Default to paged in for buffers that are not destined for
+	 * user-space because they are likely to be accessed via the
+	 * vaddr and some of them can never be paged out.
+	 */
+	if (type != VC4_BO_TYPE_V3D) {
+		page_in_ret =
+			page_in_buffer(vc4, bo, false /* copy_from_shmem */);
 
-	if (page_in_ret && !allow_unzeroed)
-		memset(vc4_bo_get_vaddr(&shmem_obj->base), 0, size);
+		if (page_in_ret && !allow_unzeroed)
+			memset(vc4_bo_get_vaddr(&shmem_obj->base), 0, size);
+	}
 
 	mutex_unlock(&vc4->bo_lock);
 

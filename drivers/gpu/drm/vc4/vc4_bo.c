@@ -501,6 +501,11 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 
 	DRM_INFO("Paging in buffer of size %zu\n", bo->base.base.size);
 
+	if (bo->base.vmap_use_count) {
+		DRM_WARN("Can't page in buffer that is mapped in shmem\n");
+		return false;
+	}
+
 	if (!get_insertion_point_or_free(vc4,
 					 bo->base.base.size,
 					 &offset,
@@ -665,6 +670,39 @@ static const struct vm_operations_struct vc4_vm_ops = {
 	.close = vc4_vm_close,
 };
 
+static int vc4_gem_vmap(struct drm_gem_object *obj, struct dma_buf_map *map)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
+	struct vc4_bo *bo = to_vc4_bo(obj);
+	int ret;
+
+	mutex_lock(&vc4->bo_lock);
+
+	if (bo->paged_in) {
+		dma_buf_map_set_vaddr(map, vc4_bo_get_vaddr(obj));
+		ret = 0;
+	} else {
+		ret = drm_gem_shmem_vmap(obj, map);
+	}
+
+	mutex_unlock(&vc4->bo_lock);
+
+	return ret;
+}
+
+static void vc4_gem_vunmap(struct drm_gem_object *obj, struct dma_buf_map *map)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
+	struct vc4_bo *bo = to_vc4_bo(obj);
+
+	mutex_lock(&vc4->bo_lock);
+
+	if (!bo->paged_in)
+		drm_gem_shmem_vunmap(obj, map);
+
+	mutex_unlock(&vc4->bo_lock);
+}
+
 static int vc4_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
 {
 	int ret;
@@ -687,8 +725,8 @@ static const struct drm_gem_object_funcs vc4_gem_object_funcs = {
 	.pin = drm_gem_shmem_pin,
 	.unpin = drm_gem_shmem_unpin,
 	.get_sg_table = drm_gem_shmem_get_sg_table,
-	.vmap = drm_gem_shmem_vmap,
-	.vunmap = drm_gem_shmem_vunmap,
+	.vmap = vc4_gem_vmap,
+	.vunmap = vc4_gem_vunmap,
 	.mmap = vc4_gem_mmap,
 };
 

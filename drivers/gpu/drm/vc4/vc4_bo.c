@@ -489,7 +489,8 @@ static bool get_insertion_point_or_free(struct vc4_dev *drv,
 }
 
 static bool page_in_buffer(struct vc4_dev *vc4,
-			   struct vc4_bo *bo)
+			   struct vc4_bo *bo,
+			   bool copy_from_shmem)
 {
 	size_t offset;
 	struct list_head *prev;
@@ -506,19 +507,21 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 					 &prev))
 		return false;
 
-	ret = drm_gem_shmem_vmap(&bo->base.base, &map);
+	if (copy_from_shmem) {
+		ret = drm_gem_shmem_vmap(&bo->base.base, &map);
 
-	if (ret) {
-		DRM_INFO("Map failed for shmem of buffer of size %zu\n",
-			 bo->base.base.size);
-		return false;
+		if (ret) {
+			DRM_INFO("Map failed for shmem of buffer of size %zu\n",
+				 bo->base.base.size);
+			return false;
+		}
+
+		memcpy((uint8_t *) vc4->cma_pool.vaddr + offset,
+		       map.vaddr,
+		       bo->base.base.size);
+
+		drm_gem_shmem_vunmap(&bo->base.base, &map);
 	}
-
-	memcpy((uint8_t *) vc4->cma_pool.vaddr + offset,
-	       map.vaddr,
-	       bo->base.base.size);
-
-	drm_gem_shmem_vunmap(&bo->base.base, &map);
 
 	bo->offset = offset;
 	bo->paged_in = true;
@@ -542,7 +545,7 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 	while (!bo->paged_in) {
 		uint64_t finished_seqno = vc4->finished_seqno;
 
-		if (page_in_buffer(vc4, bo))
+		if (page_in_buffer(vc4, bo, true /* copy_from_shmem */))
 			return 0;
 
 		/* If there are any pending jobs that were emitted and
@@ -748,7 +751,10 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 
 	vc4_bo_set_label(&shmem_obj->base, type);
 
-	page_in_ret = page_in_buffer(vc4, bo);
+	page_in_ret = page_in_buffer(vc4, bo, false /* copy_from_shmem */);
+
+	if (page_in_ret && !allow_unzeroed)
+		memset(vc4_bo_get_vaddr(&shmem_obj->base), 0, size);
 
 	mutex_unlock(&vc4->bo_lock);
 

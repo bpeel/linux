@@ -618,7 +618,8 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	struct vc4_bo *bo = to_vc4_bo(obj);
 	loff_t num_pages = obj->size >> PAGE_SHIFT;
 	struct page *page;
-	int ret;
+	pgoff_t page_offset;
+	int ret = 0;
 
 	/* Purged buffers can’t be paged in */
 	mutex_lock(&bo->madv_lock);
@@ -633,10 +634,14 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	if (ret)
 		return ret;
 
-	if (vmf->pgoff >= num_pages || WARN_ON_ONCE(!shmem->pages))
+	/* We don't use vmf->pgoff since that has the fake offset */
+	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
+
+	if (page_offset < 0 || page_offset >= num_pages ||
+	    WARN_ON_ONCE(!shmem->pages))
 		return VM_FAULT_SIGBUS;
 
-	page = shmem->pages[vmf->pgoff];
+	page = shmem->pages[page_offset];
 
 	return vmf_insert_page(vma, vmf->address, page);
 }

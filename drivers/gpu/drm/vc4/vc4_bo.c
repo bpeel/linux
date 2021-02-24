@@ -582,40 +582,13 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 	return 0;
 }
 
-static int page_out_buffer_or_wait(struct vc4_bo *bo)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
-	int ret = 0;
-
-	mutex_lock(&vc4->bo_lock);
-
-	while (bo->paged_in) {
-		if (refcount_read(&bo->usecnt)) {
-			/* Wait until a job completes and try again */
-			mutex_unlock(&vc4->bo_lock);
-			vc4_wait_for_seqno(&vc4->base,
-					   vc4->emit_seqno,
-					   ~0ull, /* timeout */
-					   false /* interruptible */);
-			flush_work(&vc4->job_done_work);
-			mutex_lock(&vc4->bo_lock);
-		} else {
-			ret = page_out_buffer(bo);
-			break;
-		}
-	}
-
-	mutex_unlock(&vc4->bo_lock);
-
-	return ret;
-}
-
 static vm_fault_t vc4_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct drm_gem_object *obj = vma->vm_private_data;
 	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
 	struct vc4_bo *bo = to_vc4_bo(obj);
+	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
 	loff_t num_pages = obj->size >> PAGE_SHIFT;
 	struct page *page;
 	pgoff_t page_offset;
@@ -630,9 +603,20 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	if (ret)
 		return ret;
 
-	ret = page_out_buffer_or_wait(bo);
-	if (ret)
-		return ret;
+	mutex_lock(&vc4->bo_lock);
+
+	if (bo->paged_in &&
+	    refcount_read(&bo->usecnt) == 0) {
+		/* If the buffer is not in use then page it out of the
+		 * CMA pool in order to have the most up-to-date copy
+		 * in the shmem. If it is in use then the client is
+		 * doing something weird so we’ll just leave it with
+		 * the previous contents and hope for the best.
+		 */
+		ret = page_out_buffer(bo);
+	}
+
+	mutex_unlock(&vc4->bo_lock);
 
 	/* We don't use vmf->pgoff since that has the fake offset */
 	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;

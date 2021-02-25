@@ -249,9 +249,10 @@ static void vc4_bo_purge(struct drm_gem_object *obj)
 	vc4_bo_remove_from_pool(bo);
 }
 
-static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
+static size_t vc4_bo_userspace_cache_purge(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+	size_t total_purged = 0;
 
 	mutex_lock(&vc4->purgeable.lock);
 	while (!list_empty(&vc4->purgeable.list)) {
@@ -292,9 +293,26 @@ static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
 		if (purged_size) {
 			vc4->purgeable.purged_size += purged_size;
 			vc4->purgeable.purged_num++;
+			total_purged += purged_size;
 		}
 	}
 	mutex_unlock(&vc4->purgeable.lock);
+
+	return total_purged;
+}
+
+static int vc4_bo_purge_userspace_cache_debugfs(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct drm_printer p = drm_seq_file_printer(m);
+	size_t total_purged;
+
+	total_purged = vc4_bo_userspace_cache_purge(dev);
+
+	drm_printf(&p, "Total purged: %zu\n", total_purged);
+
+	return 0;
 }
 
 int vc4_bo_purgeable_init(struct drm_device *dev)
@@ -303,6 +321,11 @@ int vc4_bo_purgeable_init(struct drm_device *dev)
 
 	INIT_LIST_HEAD(&vc4->purgeable.list);
 	mutex_init(&vc4->purgeable.lock);
+
+	vc4_debugfs_add_file(dev,
+			     "purge_userspace_cache",
+			     vc4_bo_purge_userspace_cache_debugfs,
+			     NULL);
 
 	return 0;
 }

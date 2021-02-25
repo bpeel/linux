@@ -347,6 +347,16 @@ static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
 	mutex_unlock(&vc4->purgeable.lock);
 }
 
+int vc4_bo_purgeable_init(struct drm_device *dev)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
+
+	INIT_LIST_HEAD(&vc4->purgeable.list);
+	mutex_init(&vc4->purgeable.lock);
+
+	return 0;
+}
+
 static struct vc4_bo *vc4_bo_get_from_cache(struct drm_device *dev,
 					    uint32_t size,
 					    enum vc4_kernel_bo_type type)

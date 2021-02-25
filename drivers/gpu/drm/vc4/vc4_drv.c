@@ -285,6 +285,10 @@ static int vc4_drm_bind(struct device *dev)
 	if (ret)
 		return ret;
 
+	ret = vc4_bo_purgeable_init(drm);
+	if (ret)
+		return ret;
+
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;

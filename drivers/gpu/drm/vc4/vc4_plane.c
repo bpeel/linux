@@ -359,7 +359,9 @@ static int vc4_plane_setup_clipping_and_scaling(struct drm_plane_state *state)
 		return ret;
 
 	for (i = 0; i < num_planes; i++) {
-		dma_addr_t paddr = vc4_bo_get_paddr(gem_obj);
+		dma_addr_t paddr;
+		vc4_bo_use(to_vc4_bo(gem_obj));
+		paddr = vc4_bo_get_paddr(gem_obj);
 		vc4_state->offsets[i] = paddr + fb->offsets[i];
 	}
 

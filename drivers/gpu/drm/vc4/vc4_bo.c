@@ -320,8 +320,6 @@ static int page_out_buffer(struct vc4_bo *bo)
 {
 	WARN_ON(!bo->paged_in);
 
-	DRM_INFO("Paging out buffer of size %zu\n", bo->base.base.size);
-
 	if (bo->cma_copy_dirty) {
 		int ret = copy_to_shmem(bo);
 
@@ -534,8 +532,6 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 	struct list_head *prev;
 
 	lockdep_assert_held(&vc4->bo_lock);
-
-	DRM_INFO("Paging in buffer of size %zu\n", bo->base.base.size);
 
 	if (bo->base.vmap_use_count) {
 		DRM_WARN("Can't page in buffer that is mapped in shmem\n");

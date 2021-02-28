@@ -957,6 +957,11 @@ vc4_complete_exec(struct drm_device *dev, struct vc4_exec_info *exec)
 		dma_fence_put(exec->fence);
 	}
 
+	for (i = 0; i < exec->rcl_write_bo_count; i++) {
+		struct vc4_bo *bo = to_vc4_bo(exec->rcl_write_bo[i]);
+		vc4_bo_written_to_by_device(bo);
+	}
+
 	if (exec->bo) {
 		for (i = 0; i < exec->bo_count; i++) {
 			struct vc4_bo *bo = to_vc4_bo(exec->bo[i]);

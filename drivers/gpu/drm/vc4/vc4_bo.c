@@ -295,26 +295,39 @@ static void vc4_bo_userspace_cache_purge(struct vc4_dev *vc4)
 	mutex_unlock(&vc4->purgeable.lock);
 }
 
-static int page_out_buffer(struct vc4_bo *bo)
+static int copy_to_shmem(struct vc4_bo *bo)
 {
-	void *vaddr = vc4_bo_get_vaddr(&bo->base.base);
 	struct dma_buf_map map;
 	int ret;
 
-	WARN_ON(!bo->paged_in);
-
-	DRM_INFO("Paging out buffer of size %zu\n", bo->base.base.size);
-
 	ret = drm_gem_shmem_vmap(&bo->base.base, &map);
+
 	if (ret) {
 		DRM_INFO("Map failed for shmem of buffer of size %zu\n",
 			 bo->base.base.size);
 		return ret;
 	}
 
-	memcpy(map.vaddr, vaddr, bo->base.base.size);
+	bo->cma_copy_dirty = false;
+	memcpy(map.vaddr, vc4_bo_get_vaddr(&bo->base.base), bo->base.base.size);
 
 	drm_gem_shmem_vunmap(&bo->base.base, &map);
+
+	return 0;
+}
+
+static int page_out_buffer(struct vc4_bo *bo)
+{
+	WARN_ON(!bo->paged_in);
+
+	DRM_INFO("Paging out buffer of size %zu\n", bo->base.base.size);
+
+	if (bo->cma_copy_dirty) {
+		int ret = copy_to_shmem(bo);
+
+		if (ret)
+			return ret;
+	}
 
 	vc4_bo_remove_from_pool(bo);
 
@@ -488,14 +501,37 @@ static bool get_insertion_point_or_free(struct vc4_dev *drv,
 	return false;
 }
 
+static int copy_to_cma_pool(struct vc4_dev *vc4,
+			    struct vc4_bo *bo)
+{
+	struct dma_buf_map map;
+	int ret;
+
+	ret = drm_gem_shmem_vmap(&bo->base.base, &map);
+
+	if (ret) {
+		DRM_WARN("Map failed for shmem of buffer of size %zu\n",
+			 bo->base.base.size);
+		return ret;
+	}
+
+	memcpy((uint8_t *) vc4->cma_pool.vaddr + bo->offset,
+	       map.vaddr,
+	       bo->base.base.size);
+
+	drm_gem_shmem_vunmap(&bo->base.base, &map);
+
+	bo->shmem_copy_dirty = false;
+
+	return ret;
+}
+
 static bool page_in_buffer(struct vc4_dev *vc4,
 			   struct vc4_bo *bo,
 			   bool copy_from_shmem)
 {
 	size_t offset;
 	struct list_head *prev;
-	struct dma_buf_map map;
-	int ret;
 
 	lockdep_assert_held(&vc4->bo_lock);
 
@@ -512,31 +548,18 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 					 &prev))
 		return false;
 
+	bo->offset = offset;
+
 	if (copy_from_shmem) {
-		ret = drm_gem_shmem_vmap(&bo->base.base, &map);
-
-		if (ret) {
-			DRM_INFO("Map failed for shmem of buffer of size %zu\n",
-				 bo->base.base.size);
+		int ret = copy_to_cma_pool(vc4, bo);
+		if (ret)
 			return false;
-		}
-
-		memcpy((uint8_t *) vc4->cma_pool.vaddr + offset,
-		       map.vaddr,
-		       bo->base.base.size);
-
-		drm_gem_shmem_vunmap(&bo->base.base, &map);
 	}
 
-	bo->offset = offset;
 	bo->paged_in = true;
 
 	list_add(&bo->offset_buffers_head, prev);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
-
-	/* Invalidate any user-space mappings */
-	drm_vma_node_unmap(&bo->base.base.vma_node,
-			   vc4->base.anon_inode->i_mapping);
 
 	return true;
 }
@@ -579,6 +602,20 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 	list_del(&bo->mru_buffers_head);
 	list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 
+	if (bo->shmem_copy_dirty) {
+		int ret = copy_to_cma_pool(vc4, bo);
+
+		if (ret)
+			return ret;
+	}
+
+	/* Invalidate any user-space mappings so that we can detect
+	 * when the buffer is updated from user-space and copy it to
+	 * the CMA pool again.
+	 */
+	drm_vma_node_unmap(&bo->base.base.vma_node,
+			   vc4->base.anon_inode->i_mapping);
+
 	return 0;
 }
 
@@ -603,27 +640,31 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	if (ret)
 		return ret;
 
-	mutex_lock(&vc4->bo_lock);
-
-	if (bo->paged_in &&
-	    refcount_read(&bo->usecnt) == 0) {
-		/* If the buffer is not in use then page it out of the
-		 * CMA pool in order to have the most up-to-date copy
-		 * in the shmem. If it is in use then the client is
-		 * doing something weird so we’ll just leave it with
-		 * the previous contents and hope for the best.
-		 */
-		ret = page_out_buffer(bo);
-	}
-
-	mutex_unlock(&vc4->bo_lock);
-
 	/* We don't use vmf->pgoff since that has the fake offset */
 	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
 	if (page_offset < 0 || page_offset >= num_pages ||
 	    WARN_ON_ONCE(!shmem->pages))
 		return VM_FAULT_SIGBUS;
+
+	mutex_lock(&vc4->bo_lock);
+
+	if (bo->paged_in && bo->cma_copy_dirty) {
+		ret = copy_to_shmem(bo);
+		if (ret)
+			ret = VM_FAULT_SIGBUS;
+	}
+
+	/* User-space is accessing the buffer so the next time the
+	 * hardware needs it from the CMA pool we will have to copy it
+	 * the updated contents across.
+	 */
+	bo->shmem_copy_dirty = true;
+
+	mutex_unlock(&vc4->bo_lock);
+
+	if (ret)
+		return ret;
 
 	page = shmem->pages[page_offset];
 
@@ -950,6 +991,26 @@ int vc4_bo_use(struct vc4_bo *bo)
 	mutex_unlock(&vc4->bo_lock);
 
 	return ret;
+}
+
+void vc4_bo_written_to_by_device(struct vc4_bo *bo)
+{
+	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
+
+	mutex_lock(&vc4->bo_lock);
+
+	/* The CMA copy of the data has been modified so the next time
+	 * it is accessed from user-space we need to copy the contents
+	 * back across.
+	 */
+	bo->cma_copy_dirty = true;
+	/* Invalidate any mappings so that we can detect any
+	 * user-space accesses.
+	 */
+	drm_vma_node_unmap(&bo->base.base.vma_node,
+			   vc4->base.anon_inode->i_mapping);
+
+	mutex_unlock(&vc4->bo_lock);
 }
 
 struct drm_gem_object *

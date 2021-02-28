@@ -272,6 +272,17 @@ struct vc4_bo {
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
 
+	/* If true then user-space has accessed the shmem backing of
+	 * the buffer since the last time we copied it into the CMA
+	 * pool and it needs to copied again.
+	 */
+	bool shmem_copy_dirty;
+	/* If true then the copy of the buffer in the CMA pool has
+	 * been used for writing since the last time it was copied
+	 * back to the shmem backing and we need to copy it again.
+	 */
+	bool cma_copy_dirty;
+
 	/* Whether the buffer is currently paged into the CMA pool */
 	bool paged_in;
 
@@ -835,6 +846,7 @@ void vc4_bo_dec_usecnt(struct vc4_bo *bo);
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo);
 void vc4_bo_remove_from_purgeable_pool(struct vc4_bo *bo);
 int vc4_bo_use(struct vc4_bo *bo);
+void vc4_bo_written_to_by_device(struct vc4_bo *bo);
 dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj);
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj);
 uint32_t vc4_get_pool_size(struct vc4_dev *vc4);

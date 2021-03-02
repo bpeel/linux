@@ -1305,6 +1305,35 @@ int vc4_get_tiling_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static int vc4_bo_cma_pool_buffers_debugfs(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
+	struct drm_printer p = drm_seq_file_printer(m);
+	size_t prev_offset = 0;
+	struct vc4_bo *bo;
+
+	mutex_lock(&vc4->bo_lock);
+
+	list_for_each_entry(bo,
+			    &vc4->cma_pool.offset_buffers,
+			    offset_buffers_head) {
+		drm_printf(&p,
+			   "0x%p off=%zu size=%zu label=%s%s\n",
+			   bo,
+			   bo->offset,
+			   bo->base.base.size,
+			   vc4->bo_labels[bo->label].name,
+			   bo->offset < prev_offset ? " OVERLAPS" : "");
+		prev_offset = bo->offset + bo->base.base.size;
+	}
+
+	mutex_unlock(&vc4->bo_lock);
+
+	return 0;
+}
+
 static void vc4_bo_cma_pool_destroy(struct drm_device *dev, void *unused)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
@@ -1330,6 +1359,11 @@ int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 
 	INIT_LIST_HEAD(&vc4->cma_pool.mru_buffers);
 	INIT_LIST_HEAD(&vc4->cma_pool.offset_buffers);
+
+	vc4_debugfs_add_file(&vc4->base,
+			     "cma_pool_buffers",
+			     vc4_bo_cma_pool_buffers_debugfs,
+			     NULL);
 
 	return drmm_add_action_or_reset(&vc4->base,
 					vc4_bo_cma_pool_destroy,

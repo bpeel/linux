@@ -794,7 +794,7 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct drm_gem_shmem_object *shmem_obj;
 	struct vc4_bo *bo;
-	bool page_in_ret;
+	bool page_in_ret = true;
 
 	if (size == 0)
 		return ERR_PTR(-EINVAL);

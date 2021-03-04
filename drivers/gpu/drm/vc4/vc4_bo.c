@@ -893,18 +893,14 @@ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
 	 * check the madv status.
 	 */
 	if (refcount_inc_not_zero(&bo->usecnt))
-		return 0;
-
-	ret = vc4_bo_use(bo);
-	if (ret)
-		return ret;
+		return vc4_bo_use(bo);
 
 	mutex_lock(&bo->madv_lock);
 	switch (bo->madv) {
 	case VC4_MADV_WILLNEED:
 		if (!refcount_inc_not_zero(&bo->usecnt))
 			refcount_set(&bo->usecnt, 1);
-		ret = 0;
+		ret = vc4_bo_use(bo);
 		break;
 	case VC4_MADV_DONTNEED:
 		/* We shouldn't use a BO marked as purgeable if at least

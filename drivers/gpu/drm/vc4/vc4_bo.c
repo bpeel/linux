@@ -505,6 +505,13 @@ static int copy_to_cma_pool(struct vc4_dev *vc4,
 	struct dma_buf_map map;
 	int ret;
 
+	/* Invalidate any user-space mappings so that we can detect
+	 * when the buffer is updated from user-space and copy it to
+	 * the CMA pool again.
+	 */
+	drm_vma_node_unmap(&bo->base.base.vma_node,
+			   vc4->base.anon_inode->i_mapping);
+
 	ret = drm_gem_shmem_vmap(&bo->base.base, &map);
 
 	if (ret) {
@@ -603,14 +610,14 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 
 		if (ret)
 			return ret;
+	} else {
+		/* Invalidate any user-space mappings so that we can
+		 * detect when the buffer is updated from user-space
+		 * and copy it to the CMA pool again.
+		 */
+		drm_vma_node_unmap(&bo->base.base.vma_node,
+				   vc4->base.anon_inode->i_mapping);
 	}
-
-	/* Invalidate any user-space mappings so that we can detect
-	 * when the buffer is updated from user-space and copy it to
-	 * the CMA pool again.
-	 */
-	drm_vma_node_unmap(&bo->base.base.vma_node,
-			   vc4->base.anon_inode->i_mapping);
 
 	return 0;
 }

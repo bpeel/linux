@@ -386,7 +386,7 @@ vc4_wait_for_seqno(struct drm_device *dev, uint64_t seqno, uint64_t timeout_ns,
 	unsigned long timeout_expire;
 	DEFINE_WAIT(wait);
 
-	if (vc4->finished_seqno >= seqno)
+	if (vc4->completed_seqno >= seqno)
 		return 0;
 
 	if (timeout_ns == 0)
@@ -405,7 +405,7 @@ vc4_wait_for_seqno(struct drm_device *dev, uint64_t seqno, uint64_t timeout_ns,
 			break;
 		}
 
-		if (vc4->finished_seqno >= seqno)
+		if (vc4->completed_seqno >= seqno)
 			break;
 
 		if (timeout_ns != ~0ull) {
@@ -1020,6 +1020,10 @@ vc4_job_handle_completed(struct vc4_dev *vc4)
 			schedule_work(&cb->work);
 		}
 	}
+
+	vc4->completed_seqno = vc4->finished_seqno;
+
+	wake_up_all(&vc4->job_wait_queue);
 
 	spin_unlock_irqrestore(&vc4->job_lock, irqflags);
 }

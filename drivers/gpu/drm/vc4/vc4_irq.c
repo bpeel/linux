@@ -191,7 +191,6 @@ vc4_irq_finish_render_job(struct drm_device *dev)
 		exec->fence = NULL;
 	}
 
-	wake_up_all(&vc4->job_wait_queue);
 	schedule_work(&vc4->job_done_work);
 }
 

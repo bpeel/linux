@@ -145,6 +145,14 @@ struct vc4_dev {
 	 */
 	uint64_t finished_seqno;
 
+	/* Sequence number for the last job that we have handled in
+	 * vc4_job_handle_completed. This is used to trigger the
+	 * WAIT_BO ioctl. It is separate from finished_seqno so that
+	 * we can have a chance to run some code outside of the IRQ
+	 * context before returning from WAIT_BO.
+	 */
+	uint64_t completed_seqno;
+
 	/* List of all struct vc4_exec_info for jobs to be executed in
 	 * the binner.  The first job in the list is the one currently
 	 * programmed into ct0ca for execution.

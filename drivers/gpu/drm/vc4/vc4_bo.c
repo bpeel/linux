@@ -594,7 +594,6 @@ static int use_bo_unlocked(struct vc4_bo *bo)
 					   finished_seqno + 1,
 					   ~0ull, /* timeout */
 					   false /* interruptible */);
-			flush_work(&vc4->job_done_work);
 			mutex_lock(&vc4->bo_lock);
 		} else {
 			return -ENOMEM;

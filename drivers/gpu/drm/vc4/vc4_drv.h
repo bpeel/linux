@@ -280,11 +280,15 @@ struct vc4_bo {
 	/* List entry for the BO's position in vc4_dev->purgeable.list */
 	struct list_head purgeable_head;
 
-	/* If true then user-space has accessed the shmem backing of
-	 * the buffer since the last time we copied it into the CMA
-	 * pool and it needs to copied again.
+	/* The range of memory that needs to be copied into the CMA
+	 * memory. The end address is exclusive. The assumption is
+	 * that if user-space uses subregions of a large buffer for
+	 * rendering then the regions are likely to be bunched
+	 * together and we don’t need a mechanism to have disjoint
+	 * regions. If this turns out not to be the case then we could
+	 * improve this either having a bitmask of dirty pages.
 	 */
-	bool shmem_copy_dirty;
+	size_t shmem_dirty_start, shmem_dirty_end;
 	/* If true then the copy of the buffer in the CMA pool has
 	 * been used for writing since the last time it was copied
 	 * back to the shmem backing and we need to copy it again.

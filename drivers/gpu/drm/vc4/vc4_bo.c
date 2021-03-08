@@ -522,13 +522,15 @@ static int copy_to_cma_pool(struct vc4_dev *vc4,
 		return ret;
 	}
 
-	memcpy((uint8_t *) vc4->cma_pool.vaddr + bo->offset,
-	       map.vaddr,
-	       bo->base.base.size);
+	memcpy((uint8_t *) vc4->cma_pool.vaddr +
+	       bo->offset +
+	       bo->shmem_dirty_start,
+	       map.vaddr + bo->shmem_dirty_start,
+	       bo->shmem_dirty_end - bo->shmem_dirty_start);
 
 	drm_gem_shmem_vunmap(&bo->base.base, &map);
 
-	bo->shmem_copy_dirty = false;
+	bo->shmem_dirty_start = bo->shmem_dirty_end = 0;
 
 	return ret;
 }
@@ -556,7 +558,10 @@ static bool page_in_buffer(struct vc4_dev *vc4,
 	bo->offset = offset;
 
 	if (copy_from_shmem) {
-		int ret = copy_to_cma_pool(vc4, bo);
+		int ret;
+		bo->shmem_dirty_start = 0;
+		bo->shmem_dirty_end = bo->base.base.size;
+		ret = copy_to_cma_pool(vc4, bo);
 		if (ret)
 			return false;
 	}
@@ -584,7 +589,7 @@ static int use_bo_locked(struct vc4_bo *bo)
 		list_add(&bo->mru_buffers_head, &vc4->cma_pool.mru_buffers);
 	}
 
-	if (bo->shmem_copy_dirty) {
+	if (bo->shmem_dirty_start != bo->shmem_dirty_end) {
 		int ret = copy_to_cma_pool(vc4, bo);
 
 		if (ret)
@@ -610,6 +615,7 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	struct vc4_dev *vc4 = to_vc4_dev(obj->dev);
 	loff_t num_pages = obj->size >> PAGE_SHIFT;
 	struct page *page;
+	size_t page_start, page_end;
 	pgoff_t page_offset;
 	int ret = 0;
 
@@ -623,7 +629,9 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 		return ret;
 
 	/* We don't use vmf->pgoff since that has the fake offset */
-	page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
+	page_start = vmf->address - vma->vm_start;
+	page_end = page_start + PAGE_SIZE;
+	page_offset = page_start >> PAGE_SHIFT;
 
 	if (page_offset < 0 || page_offset >= num_pages ||
 	    WARN_ON_ONCE(!shmem->pages))
@@ -641,7 +649,13 @@ static vm_fault_t vc4_fault(struct vm_fault *vmf)
 	 * hardware needs it from the CMA pool we will have to copy
 	 * the updated contents across.
 	 */
-	bo->shmem_copy_dirty = true;
+	if (bo->shmem_dirty_start >= bo->shmem_dirty_end) {
+		bo->shmem_dirty_start = page_start;
+		bo->shmem_dirty_end = page_end;
+	} else {
+		bo->shmem_dirty_start = min(bo->shmem_dirty_start, page_start);
+		bo->shmem_dirty_end = max(bo->shmem_dirty_end, page_end);
+	}
 
 	mutex_unlock(&vc4->bo_lock);
 

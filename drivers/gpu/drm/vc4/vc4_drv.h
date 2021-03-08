@@ -89,27 +89,6 @@ struct vc4_dev {
 
 	struct vc4_hang_state *hang_state;
 
-	/* The kernel-space BO cache.  Tracks buffers that have been
-	 * unreferenced by all other users (refcounts of 0!) but not
-	 * yet freed, so we can do cheap allocations.
-	 */
-	struct vc4_bo_cache {
-		/* Array of list heads for entries in the BO cache,
-		 * based on number of pages, so we can do O(1) lookups
-		 * in the cache when allocating.
-		 */
-		struct list_head *size_list;
-		uint32_t size_list_size;
-
-		/* List of all BOs in the cache, ordered by age, so we
-		 * can do O(1) lookups when trying to free old
-		 * buffers.
-		 */
-		struct list_head time_list;
-		struct work_struct time_work;
-		struct timer_list time_timer;
-	} bo_cache;
-
 	u32 num_labels;
 	struct vc4_label {
 		const char *name;
@@ -117,7 +96,7 @@ struct vc4_dev {
 		u32 size_allocated;
 	} *bo_labels;
 
-	/* Protects bo_cache and bo_labels. */
+	/* Protects bo_labels */
 	struct mutex bo_lock;
 
 	/* Purgeable BO pool. All BOs in this pool can have their memory
@@ -268,16 +247,14 @@ struct vc4_bo {
 
 	bool t_format;
 
-	/* List entry for the BO's position in either
-	 * vc4_exec_info->unref_list or vc4_dev->bo_cache.time_list
+	/* List entry for the BO's position in
+	 * vc4_exec_info->unref_list
 	 */
 	struct list_head unref_head;
 
-	/* Time in jiffies when the BO was put in vc4->bo_cache. */
-	unsigned long free_time;
 
-	/* List entry for the BO's position in vc4_dev->bo_cache.size_list */
-	struct list_head size_head;
+	/* List entry for the BO's position in vc4_dev->purgeable.list */
+	struct list_head purgeable_head;
 
 	/* Struct for shader validation state, if created by
 	 * DRM_IOCTL_VC4_CREATE_SHADER_BO.
@@ -826,7 +803,7 @@ struct drm_gem_object *vc4_prime_import_sg_table(struct drm_device *dev,
 						 struct dma_buf_attachment *attach,
 						 struct sg_table *sgt);
 int vc4_prime_vmap(struct drm_gem_object *obj, struct dma_buf_map *map);
-int vc4_bo_cache_init(struct drm_device *dev);
+int vc4_bo_labels_init(struct drm_device *dev);
 int vc4_bo_inc_usecnt(struct vc4_bo *bo);
 void vc4_bo_dec_usecnt(struct vc4_bo *bo);
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo);

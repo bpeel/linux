@@ -281,7 +281,7 @@ static int vc4_drm_bind(struct device *dev)
 
 	mutex_init(&vc4->bin_bo_lock);
 
-	ret = vc4_bo_cache_init(drm);
+	ret = vc4_bo_labels_init(drm);
 	if (ret)
 		return ret;
 

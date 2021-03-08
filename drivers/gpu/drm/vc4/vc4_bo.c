@@ -156,11 +156,6 @@ static void vc4_bo_set_label(struct drm_gem_object *gem_obj, int label)
 	bo->label = label;
 }
 
-static uint32_t bo_page_index(size_t size)
-{
-	return (size / PAGE_SIZE) - 1;
-}
-
 static void vc4_bo_destroy(struct vc4_bo *bo)
 {
 	struct drm_gem_object *obj = &bo->base.base;
@@ -180,76 +175,12 @@ static void vc4_bo_destroy(struct vc4_bo *bo)
 	drm_gem_cma_free_object(obj);
 }
 
-static void vc4_bo_remove_from_cache(struct vc4_bo *bo)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
-
-	lockdep_assert_held(&vc4->bo_lock);
-	list_del(&bo->unref_head);
-	list_del(&bo->size_head);
-}
-
-static struct list_head *vc4_get_cache_list_for_size(struct drm_device *dev,
-						     size_t size)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
-	uint32_t page_index = bo_page_index(size);
-
-	if (vc4->bo_cache.size_list_size <= page_index) {
-		uint32_t new_size = max(vc4->bo_cache.size_list_size * 2,
-					page_index + 1);
-		struct list_head *new_list;
-		uint32_t i;
-
-		new_list = kmalloc_array(new_size, sizeof(struct list_head),
-					 GFP_KERNEL);
-		if (!new_list)
-			return NULL;
-
-		/* Rebase the old cached BO lists to their new list
-		 * head locations.
-		 */
-		for (i = 0; i < vc4->bo_cache.size_list_size; i++) {
-			struct list_head *old_list =
-				&vc4->bo_cache.size_list[i];
-
-			if (list_empty(old_list))
-				INIT_LIST_HEAD(&new_list[i]);
-			else
-				list_replace(old_list, &new_list[i]);
-		}
-		/* And initialize the brand new BO list heads. */
-		for (i = vc4->bo_cache.size_list_size; i < new_size; i++)
-			INIT_LIST_HEAD(&new_list[i]);
-
-		kfree(vc4->bo_cache.size_list);
-		vc4->bo_cache.size_list = new_list;
-		vc4->bo_cache.size_list_size = new_size;
-	}
-
-	return &vc4->bo_cache.size_list[page_index];
-}
-
-static void vc4_bo_cache_purge(struct drm_device *dev)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
-
-	mutex_lock(&vc4->bo_lock);
-	while (!list_empty(&vc4->bo_cache.time_list)) {
-		struct vc4_bo *bo = list_last_entry(&vc4->bo_cache.time_list,
-						    struct vc4_bo, unref_head);
-		vc4_bo_remove_from_cache(bo);
-		vc4_bo_destroy(bo);
-	}
-	mutex_unlock(&vc4->bo_lock);
-}
-
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
 
 	mutex_lock(&vc4->purgeable.lock);
-	list_add_tail(&bo->size_head, &vc4->purgeable.list);
+	list_add_tail(&bo->purgeable_head, &vc4->purgeable.list);
 	vc4->purgeable.num++;
 	vc4->purgeable.size += bo->base.base.size;
 	mutex_unlock(&vc4->purgeable.lock);
@@ -271,7 +202,7 @@ static void vc4_bo_remove_from_purgeable_pool_locked(struct vc4_bo *bo)
 	 * Re-initializing the list element guarantees that list_del()
 	 * will work correctly even if it's a NOP.
 	 */
-	list_del_init(&bo->size_head);
+	list_del_init(&bo->purgeable_head);
 	vc4->purgeable.num--;
 	vc4->purgeable.size -= bo->base.base.size;
 }
@@ -307,7 +238,8 @@ static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
 	mutex_lock(&vc4->purgeable.lock);
 	while (!list_empty(&vc4->purgeable.list)) {
 		struct vc4_bo *bo = list_first_entry(&vc4->purgeable.list,
-						     struct vc4_bo, size_head);
+						     struct vc4_bo,
+						     purgeable_head);
 		struct drm_gem_object *obj = &bo->base.base;
 		size_t purged_size = 0;
 
@@ -331,7 +263,7 @@ static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
 		 * If one of these conditions is not met, just skip the entry.
 		 */
 		if (bo->madv == VC4_MADV_DONTNEED &&
-		    list_empty(&bo->size_head) &&
+		    list_empty(&bo->purgeable_head) &&
 		    !refcount_read(&bo->usecnt)) {
 			purged_size = bo->base.base.size;
 			vc4_bo_purge(obj);
@@ -345,35 +277,6 @@ static void vc4_bo_userspace_cache_purge(struct drm_device *dev)
 		}
 	}
 	mutex_unlock(&vc4->purgeable.lock);
-}
-
-static struct vc4_bo *vc4_bo_get_from_cache(struct drm_device *dev,
-					    uint32_t size,
-					    enum vc4_kernel_bo_type type)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
-	uint32_t page_index = bo_page_index(size);
-	struct vc4_bo *bo = NULL;
-
-	size = roundup(size, PAGE_SIZE);
-
-	mutex_lock(&vc4->bo_lock);
-	if (page_index >= vc4->bo_cache.size_list_size)
-		goto out;
-
-	if (list_empty(&vc4->bo_cache.size_list[page_index]))
-		goto out;
-
-	bo = list_first_entry(&vc4->bo_cache.size_list[page_index],
-			      struct vc4_bo, size_head);
-	vc4_bo_remove_from_cache(bo);
-	kref_init(&bo->base.base.refcount);
-
-out:
-	if (bo)
-		vc4_bo_set_label(&bo->base.base, type);
-	mutex_unlock(&vc4->bo_lock);
-	return bo;
 }
 
 static const struct vm_operations_struct vc4_vm_ops = {
@@ -432,28 +335,11 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 	if (size == 0)
 		return ERR_PTR(-EINVAL);
 
-	/* First, try to get a vc4_bo from the kernel BO cache. */
-	bo = vc4_bo_get_from_cache(dev, size, type);
-	if (bo) {
-		if (!allow_unzeroed)
-			memset(bo->base.vaddr, 0, bo->base.base.size);
-		return bo;
-	}
-
 	cma_obj = drm_gem_cma_create(dev, size);
 	if (IS_ERR(cma_obj)) {
 		/*
-		 * If we've run out of CMA memory, kill the cache of
-		 * CMA allocations we've got laying around and try again.
-		 */
-		vc4_bo_cache_purge(dev);
-		cma_obj = drm_gem_cma_create(dev, size);
-	}
-
-	if (IS_ERR(cma_obj)) {
-		/*
-		 * Still not enough CMA memory, purge the userspace BO
-		 * cache and retry.
+		 * Not enough CMA memory, purge the userspace BO cache
+		 * and retry.
 		 * This is sub-optimal since we purge the whole userspace
 		 * BO cache which forces user that want to re-use the BO to
 		 * restore its initial content.
@@ -513,37 +399,11 @@ int vc4_dumb_create(struct drm_file *file_priv,
 	return ret;
 }
 
-static void vc4_bo_cache_free_old(struct drm_device *dev)
-{
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
-	unsigned long expire_time = jiffies - msecs_to_jiffies(1000);
-
-	lockdep_assert_held(&vc4->bo_lock);
-
-	while (!list_empty(&vc4->bo_cache.time_list)) {
-		struct vc4_bo *bo = list_last_entry(&vc4->bo_cache.time_list,
-						    struct vc4_bo, unref_head);
-		if (time_before(expire_time, bo->free_time)) {
-			mod_timer(&vc4->bo_cache.time_timer,
-				  round_jiffies_up(jiffies +
-						   msecs_to_jiffies(1000)));
-			return;
-		}
-
-		vc4_bo_remove_from_cache(bo);
-		vc4_bo_destroy(bo);
-	}
-}
-
-/* Called on the last userspace/kernel unreference of the BO.  Returns
- * it to the BO cache if possible, otherwise frees it.
+/* Called on the last userspace/kernel unreference of the BO.
  */
 void vc4_free_object(struct drm_gem_object *gem_bo)
 {
-	struct drm_device *dev = gem_bo->dev;
-	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_bo *bo = to_vc4_bo(gem_bo);
-	struct list_head *cache_list;
 
 	/* Remove the BO from the purgeable list. */
 	mutex_lock(&bo->madv_lock);
@@ -551,68 +411,7 @@ void vc4_free_object(struct drm_gem_object *gem_bo)
 		vc4_bo_remove_from_purgeable_pool(bo);
 	mutex_unlock(&bo->madv_lock);
 
-	mutex_lock(&vc4->bo_lock);
-	/* If the object references someone else's memory, we can't cache it.
-	 */
-	if (gem_bo->import_attach) {
-		vc4_bo_destroy(bo);
-		goto out;
-	}
-
-	/* Don't cache if it was publicly named. */
-	if (gem_bo->name) {
-		vc4_bo_destroy(bo);
-		goto out;
-	}
-
-	/* If this object was partially constructed but CMA allocation
-	 * had failed, just free it. Can also happen when the BO has been
-	 * purged.
-	 */
-	if (!bo->base.vaddr) {
-		vc4_bo_destroy(bo);
-		goto out;
-	}
-
-	cache_list = vc4_get_cache_list_for_size(dev, gem_bo->size);
-	if (!cache_list) {
-		vc4_bo_destroy(bo);
-		goto out;
-	}
-
-	if (bo->validated_shader) {
-		kfree(bo->validated_shader->uniform_addr_offsets);
-		kfree(bo->validated_shader->texture_samples);
-		kfree(bo->validated_shader);
-		bo->validated_shader = NULL;
-	}
-
-	/* Reset madv and usecnt before adding the BO to the cache. */
-	bo->madv = __VC4_MADV_NOTSUPP;
-	refcount_set(&bo->usecnt, 0);
-
-	bo->t_format = false;
-	bo->free_time = jiffies;
-	list_add(&bo->size_head, cache_list);
-	list_add(&bo->unref_head, &vc4->bo_cache.time_list);
-
-	vc4_bo_set_label(&bo->base.base, VC4_BO_TYPE_KERNEL_CACHE);
-
-	vc4_bo_cache_free_old(dev);
-
-out:
-	mutex_unlock(&vc4->bo_lock);
-}
-
-static void vc4_bo_cache_time_work(struct work_struct *work)
-{
-	struct vc4_dev *vc4 =
-		container_of(work, struct vc4_dev, bo_cache.time_work);
-	struct drm_device *dev = &vc4->base;
-
-	mutex_lock(&vc4->bo_lock);
-	vc4_bo_cache_free_old(dev);
-	mutex_unlock(&vc4->bo_lock);
+	vc4_bo_destroy(bo);
 }
 
 int vc4_bo_inc_usecnt(struct vc4_bo *bo)
@@ -664,13 +463,6 @@ void vc4_bo_dec_usecnt(struct vc4_bo *bo)
 	    bo->madv == VC4_MADV_DONTNEED)
 		vc4_bo_add_to_purgeable_pool(bo);
 	mutex_unlock(&bo->madv_lock);
-}
-
-static void vc4_bo_cache_time_timer(struct timer_list *t)
-{
-	struct vc4_dev *vc4 = from_timer(vc4, t, bo_cache.time_timer);
-
-	schedule_work(&vc4->bo_cache.time_work);
 }
 
 struct dma_buf * vc4_prime_export(struct drm_gem_object *obj, int flags)
@@ -1023,8 +815,8 @@ int vc4_get_tiling_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
-static void vc4_bo_cache_destroy(struct drm_device *dev, void *unused);
-int vc4_bo_cache_init(struct drm_device *dev)
+static void vc4_bo_labels_destroy(struct drm_device *dev, void *unused);
+int vc4_bo_labels_init(struct drm_device *dev)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	int i;
@@ -1047,27 +839,17 @@ int vc4_bo_cache_init(struct drm_device *dev)
 
 	vc4_debugfs_add_file(dev, "bo_stats", vc4_bo_stats_debugfs, NULL);
 
-	INIT_LIST_HEAD(&vc4->bo_cache.time_list);
-
-	INIT_WORK(&vc4->bo_cache.time_work, vc4_bo_cache_time_work);
-	timer_setup(&vc4->bo_cache.time_timer, vc4_bo_cache_time_timer, 0);
-
-	return drmm_add_action_or_reset(dev, vc4_bo_cache_destroy, NULL);
+	return drmm_add_action_or_reset(dev, vc4_bo_labels_destroy, NULL);
 }
 
-static void vc4_bo_cache_destroy(struct drm_device *dev, void *unused)
+static void vc4_bo_labels_destroy(struct drm_device *dev, void *unused)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	int i;
 
-	del_timer(&vc4->bo_cache.time_timer);
-	cancel_work_sync(&vc4->bo_cache.time_work);
-
-	vc4_bo_cache_purge(dev);
-
 	for (i = 0; i < vc4->num_labels; i++) {
 		if (vc4->bo_labels[i].num_allocated) {
-			DRM_ERROR("Destroying BO cache with %d %s "
+			DRM_ERROR("Destroying BO labels with %d %s "
 				  "BOs still allocated\n",
 				  vc4->bo_labels[i].num_allocated,
 				  vc4->bo_labels[i].name);

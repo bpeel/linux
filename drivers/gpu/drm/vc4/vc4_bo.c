@@ -831,6 +831,8 @@ struct vc4_bo *vc4_bo_create(struct drm_device *dev, size_t unaligned_size,
 
 		if (page_in_ret && !allow_unzeroed)
 			memset(vc4_bo_get_vaddr(&shmem_obj->base), 0, size);
+
+		bo->cma_copy_dirty = true;
 	}
 
 	mutex_unlock(&vc4->bo_lock);

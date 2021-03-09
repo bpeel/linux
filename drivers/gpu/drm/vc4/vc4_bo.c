@@ -385,11 +385,14 @@ static bool is_unmovable_buffer(struct vc4_dev *vc4,
 
 static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 					   size_t size,
+					   bool zero_cma_copy,
 					   size_t *offset_out,
-					   struct list_head **prev_out)
+					   struct list_head **prev_out,
+					   size_t *total_freed_out)
 {
 	struct vc4_bo *bo, *tmp;
 	struct drm_gem_object *fb_buf = NULL;
+	size_t total_freed = 0;
 
 	if (vc4->base.fb_helper && vc4->base.fb_helper->buffer)
 		fb_buf = vc4->base.fb_helper->buffer->gem;
@@ -441,6 +444,14 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 		if (page_out_buffer(bo))
 			continue;
 
+		total_freed += bo->base.base.size;
+
+		if (zero_cma_copy) {
+			memset(vc4->cma_pool.vaddr + bo->offset,
+			       0,
+			       bo->base.base.size);
+		}
+
 		if (prev->next == &vc4->cma_pool.offset_buffers) {
 			next_offset = VC4_CMA_POOL_SIZE;
 		} else {
@@ -457,6 +468,9 @@ static bool page_out_buffers_for_insertion(struct vc4_dev *vc4,
 			return true;
 		}
 	}
+
+	if (total_freed_out)
+		*total_freed_out = total_freed;
 
 	return false;
 }
@@ -524,8 +538,10 @@ static bool get_insertion_point_or_free(struct vc4_dev *vc4,
 	/* Try paging out some unused buffers */
 	if (page_out_buffers_for_insertion(vc4,
 					   size,
+					   false, /* zero_cma_copy */
 					   offset_out,
-					   prev_out))
+					   prev_out,
+					   NULL /* total_freed_out */))
 		return true;
 
 	DRM_INFO("Couldn't find insertion point for buffer of size %zu\n",
@@ -1305,6 +1321,36 @@ int vc4_get_tiling_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static int vc4_bo_purge_cma_pool_debugfs(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct vc4_dev *vc4 = to_vc4_dev(dev);
+	struct drm_printer p = drm_seq_file_printer(m);
+	size_t offset;
+	size_t total_freed = 0;
+	struct list_head *prev;
+
+	mutex_lock(&vc4->bo_lock);
+
+	/* Try to make space for a buffer that is bigger than the
+	 * pool. This should end up clearing out all buffers that can
+	 * be cleared out.
+	 */
+	page_out_buffers_for_insertion(vc4,
+				       VC4_CMA_POOL_SIZE + PAGE_SIZE,
+				       true, /* zero_cma_copy */
+				       &offset,
+				       &prev,
+				       &total_freed);
+
+	drm_printf(&p, "freed %zu bytes\n", total_freed);
+
+	mutex_unlock(&vc4->bo_lock);
+
+	return 0;
+}
+
 static int vc4_bo_cma_pool_buffers_debugfs(struct seq_file *m, void *data)
 {
 	struct drm_info_node *node = (struct drm_info_node *)m->private;
@@ -1363,6 +1409,10 @@ int vc4_bo_cma_pool_init(struct vc4_dev *vc4)
 	vc4_debugfs_add_file(&vc4->base,
 			     "cma_pool_buffers",
 			     vc4_bo_cma_pool_buffers_debugfs,
+			     NULL);
+	vc4_debugfs_add_file(&vc4->base,
+			     "purge_cma_pool",
+			     vc4_bo_purge_cma_pool_debugfs,
 			     NULL);
 
 	return drmm_add_action_or_reset(&vc4->base,

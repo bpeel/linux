@@ -232,3 +232,45 @@ int v3d_get_bo_offset_ioctl(struct drm_device *dev, void *data,
 	drm_gem_object_put(gem_obj);
 	return 0;
 }
+
+int v3d_dumb_create(struct drm_file *file, struct drm_device *dev,
+		    struct drm_mode_create_dumb *args)
+{
+	u32 min_pitch = DIV_ROUND_UP(args->width * args->bpp, 8);
+	struct drm_gem_shmem_object *shmem;
+	struct v3d_bo *bo;
+	int ret;
+
+	if (!args->pitch || !args->size) {
+		args->pitch = min_pitch;
+		args->size = args->pitch * args->height;
+	} else {
+		/* ensure sane minimum values */
+		if (args->pitch < min_pitch)
+			args->pitch = min_pitch;
+		if (args->size < args->pitch * args->height)
+			args->size = args->pitch * args->height;
+	}
+
+	shmem = drm_gem_shmem_create(dev, args->size);
+	if (IS_ERR(shmem))
+		return PTR_ERR_OR_ZERO(shmem);
+
+	bo = to_v3d_bo(&shmem->base);
+
+	ret = v3d_bo_create_finish(&shmem->base);
+	if (ret) {
+		drm_gem_shmem_free_object(&shmem->base);
+		return ret;
+	}
+
+	/*
+	 * Allocate an id of idr table where the obj is registered
+	 * and handle has the id what user can see.
+	 */
+	ret = drm_gem_handle_create(file, &shmem->base, &args->handle);
+	/* drop reference from allocate - handle holds it now. */
+	drm_gem_object_put(&shmem->base);
+
+	return ret;
+}

@@ -145,6 +145,27 @@ free_obj:
 	return ERR_PTR(ret);
 }
 
+static void *get_vc4_bo(struct v3d_dev *v3d,
+			struct dma_buf *dma_buf)
+{
+	struct drm_device *vc4_dev = v3d_get_vc4_dev(v3d);
+	struct drm_gem_object *obj;
+
+	if (vc4_dev == NULL)
+		return NULL;
+
+	/* This should probably also sure that the buffer came from
+	 * prime by checking whether dma_buf->ops is
+	 * drm_gem_prime_dmabuf_ops.
+	 */
+	obj = dma_buf->priv;
+
+	if (obj->dev == vc4_dev)
+		return obj;
+	else
+		return NULL;
+}
+
 struct drm_gem_object *
 v3d_prime_import_sg_table(struct drm_device *dev,
 			  struct dma_buf_attachment *attach,
@@ -162,6 +183,8 @@ v3d_prime_import_sg_table(struct drm_device *dev,
 		drm_gem_shmem_free_object(obj);
 		return ERR_PTR(ret);
 	}
+
+	to_v3d_bo(obj)->vc4_bo = get_vc4_bo(to_v3d_dev(dev), attach->dmabuf);
 
 	return obj;
 }

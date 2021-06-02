@@ -153,6 +153,8 @@ struct v3d_bo {
 	 * v3d_render_job->unref_list
 	 */
 	struct list_head unref_head;
+
+	void *vc4_bo;
 };
 
 static inline struct v3d_bo *

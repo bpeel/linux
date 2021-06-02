@@ -119,6 +119,8 @@ struct v3d_dev {
 		u32 num_allocated;
 		u32 pages_allocated;
 	} bo_stats;
+
+	struct drm_device *vc4_dev;
 };
 
 static inline struct v3d_dev *
@@ -304,6 +306,8 @@ static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
 
 	return min_t(u64, MAX_JIFFY_OFFSET, nsecs_to_jiffies64(n) + 1);
 }
+
+struct drm_device *v3d_get_vc4_dev(struct v3d_dev *v3d);
 
 /* v3d_bo.c */
 struct drm_gem_object *v3d_create_object(struct drm_device *dev, size_t size);

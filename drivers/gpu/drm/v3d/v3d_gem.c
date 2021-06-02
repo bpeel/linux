@@ -13,6 +13,7 @@
 #include <linux/uaccess.h>
 
 #include <drm/drm_syncobj.h>
+#include <drm/drm_drv.h>
 #include <uapi/drm/v3d_drm.h>
 
 #include "v3d_drv.h"
@@ -973,4 +974,7 @@ v3d_gem_destroy(struct drm_device *dev)
 
 	dma_free_coherent(v3d->drm.dev, 4096 * 1024, (void *)v3d->pt,
 			  v3d->pt_paddr);
+
+	if (v3d->vc4_dev)
+		drm_dev_put(v3d->vc4_dev);
 }

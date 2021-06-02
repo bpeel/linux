@@ -236,6 +236,49 @@ map_regs(struct v3d_dev *v3d, void __iomem **regs, const char *name)
 	return PTR_ERR_OR_ZERO(*regs);
 }
 
+struct drm_device *v3d_get_vc4_dev(struct v3d_dev *v3d)
+{
+	struct kset *kset;
+	struct kobject *child;
+	struct device *dev;
+	struct drm_device *vc4 = NULL;
+
+	if (v3d->vc4_dev)
+		return v3d->vc4_dev;
+
+	kset = v3d->drm.dev->kobj.kset;
+
+	spin_lock(&kset->list_lock);
+
+	list_for_each_entry(child, &kset->list, entry) {
+		if (!strcmp(child->name, "gpu")) {
+			dev = list_entry(child, struct device, kobj);
+			vc4 = dev_get_drvdata(dev);
+			drm_dev_get(vc4);
+			break;
+		}
+	}
+
+	spin_unlock(&kset->list_lock);
+
+	if (vc4 == NULL)
+		return NULL;
+
+	/* Don’t want to add another lock, just use any old thing
+	 * seeing as this is just a nasty hack anyway
+	 */
+	spin_lock(&v3d->job_lock);
+
+	if (v3d->vc4_dev)
+		drm_dev_put(vc4);
+	else
+		v3d->vc4_dev = vc4;
+
+	spin_unlock(&v3d->job_lock);
+
+	return v3d->vc4_dev;
+}
+
 static int v3d_platform_drm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;

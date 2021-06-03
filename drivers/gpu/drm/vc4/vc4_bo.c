@@ -677,6 +677,17 @@ static int use_bo_locked(struct vc4_bo *bo)
 	return 0;
 }
 
+void vc4_bo_invalidate_shmem(struct vc4_dev *vc4,
+			     struct vc4_bo *bo)
+{
+	mutex_lock(&vc4->bo_lock);
+
+	bo->shmem_dirty_start = 0;
+	bo->shmem_dirty_end = bo->base.base.size;
+
+	mutex_unlock(&vc4->bo_lock);
+}
+
 static vm_fault_t vc4_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;

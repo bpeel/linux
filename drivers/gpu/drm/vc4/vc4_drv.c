@@ -279,6 +279,8 @@ static int vc4_drm_bind(struct device *dev)
 	if (IS_ERR(vc4))
 		return PTR_ERR(vc4);
 
+	vc4->bo_invalidate_shmem = vc4_bo_invalidate_shmem;
+
 	drm = &vc4->base;
 	platform_set_drvdata(pdev, drm);
 	INIT_LIST_HEAD(&vc4->debugfs_list);

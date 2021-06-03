@@ -325,6 +325,8 @@ int v3d_get_bo_offset_ioctl(struct drm_device *dev, void *data,
 struct drm_gem_object *v3d_prime_import_sg_table(struct drm_device *dev,
 						 struct dma_buf_attachment *attach,
 						 struct sg_table *sgt);
+void v3d_bo_invalidate_shmem(struct v3d_dev *v3d,
+			     struct v3d_bo *bo);
 
 /* v3d_debugfs.c */
 void v3d_debugfs_init(struct drm_minor *minor);

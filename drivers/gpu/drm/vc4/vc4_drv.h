@@ -74,8 +74,17 @@ struct vc4_perfmon {
 	u64 counters[];
 };
 
+struct vc4_bo;
+
 struct vc4_dev {
 	struct drm_device base;
+
+	/* Hack so that v3d can find the vc4_bo_invalidate_shmem
+	 * function from the vc4_dev. This needs to be before the rest
+	 * of the members because v3d has its own fake struct to find
+	 * it.
+	 */
+	void (* bo_invalidate_shmem)(struct vc4_dev *vc4, struct vc4_bo *bo);
 
 	bool firmware_kms;
 	struct rpi_firmware *firmware;
@@ -861,6 +870,7 @@ void vc4_bo_written_to_by_device(struct vc4_bo *bo);
 dma_addr_t vc4_bo_get_paddr(struct drm_gem_object *obj);
 void *vc4_bo_get_vaddr(struct drm_gem_object *obj);
 uint32_t vc4_get_pool_size(struct vc4_dev *vc4);
+void vc4_bo_invalidate_shmem(struct vc4_dev *vc4, struct vc4_bo *bo);
 
 /* vc4_crtc.c */
 extern struct platform_driver vc4_crtc_driver;

@@ -427,9 +427,17 @@ v3d_render_job_free(struct kref *ref)
 	struct v3d_render_job *job = container_of(ref, struct v3d_render_job,
 						  base.refcount);
 	struct v3d_bo *bo, *save;
+	int i;
 
 	list_for_each_entry_safe(bo, save, &job->unref_list, unref_head) {
 		drm_gem_object_put(&bo->base.base);
+	}
+
+	for (i = 0; i < job->base.bo_count; i++) {
+		bo = to_v3d_bo(job->base.bo[i]);
+
+		if (bo->vc4_bo)
+			v3d_bo_invalidate_shmem(job->base.v3d, bo);
 	}
 
 	v3d_job_free(ref);

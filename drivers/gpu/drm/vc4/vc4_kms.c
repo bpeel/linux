@@ -306,6 +306,25 @@ static void vc5_hvs_pv_muxing_commit(struct vc4_dev *vc4,
 }
 
 static void
+update_framebuffer_cma(struct drm_atomic_state *state)
+{
+	struct drm_plane *plane;
+	struct drm_plane_state *new_plane_state;
+	struct vc4_bo *bo;
+	int i;
+
+	for_each_new_plane_in_state(state, plane, new_plane_state, i) {
+		if (!new_plane_state->fb ||
+		    !new_plane_state->fb->obj[0])
+			continue;
+
+		bo = to_vc4_bo(new_plane_state->fb->obj[0]);
+
+		vc4_bo_use(bo);
+	}
+}
+
+static void
 vc4_atomic_complete_commit(struct drm_atomic_state *state)
 {
 	struct drm_device *dev = state->dev;
@@ -329,6 +348,8 @@ vc4_atomic_complete_commit(struct drm_atomic_state *state)
 		clk_set_min_rate(hvs->core_clk, 500000000);
 
 	drm_atomic_helper_wait_for_fences(dev, state, false);
+
+	update_framebuffer_cma(state);
 
 	drm_atomic_helper_wait_for_dependencies(state);
 

@@ -998,6 +998,23 @@ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
 	return ret;
 }
 
+int vc4_bo_inc_usecnt_if_cma(struct vc4_bo *bo,
+			     dma_addr_t *paddr)
+{
+	int ret = 0;
+
+	if (bo->paged_in) {
+		ret = vc4_bo_inc_usecnt(bo);
+
+		if (ret == 0) {
+			*paddr = vc4_bo_get_paddr(&bo->base.base);
+			ret = 1;
+		}
+	}
+
+	return ret;
+}
+
 void vc4_bo_dec_usecnt(struct vc4_bo *bo)
 {
 	/* Fast path: if the BO is still retained by someone, no need to test

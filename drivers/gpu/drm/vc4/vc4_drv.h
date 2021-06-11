@@ -79,12 +79,13 @@ struct vc4_bo;
 struct vc4_dev {
 	struct drm_device base;
 
-	/* Hack so that v3d can find the vc4_bo_invalidate_shmem
-	 * function from the vc4_dev. This needs to be before the rest
-	 * of the members because v3d has its own fake struct to find
-	 * it.
+	/* Hack so that v3d can find some functions from the vc4_dev.
+	 * This needs to be before the rest of the members because v3d
+	 * has its own fake struct to find them.
 	 */
 	void (* bo_invalidate_shmem)(struct vc4_dev *vc4, struct vc4_bo *bo);
+	int (* bo_inc_usecnt_if_cma)(struct vc4_bo *bo, dma_addr_t *paddr);
+	void (* bo_dec_usecnt)(struct vc4_bo *bo);
 
 	bool firmware_kms;
 	struct rpi_firmware *firmware;
@@ -862,6 +863,7 @@ int vc4_bo_labels_init(struct drm_device *dev);
 int vc4_bo_cma_pool_init(struct vc4_dev *vc4);
 int vc4_bo_purgeable_init(struct drm_device *dev);
 int vc4_bo_inc_usecnt(struct vc4_bo *bo);
+int vc4_bo_inc_usecnt_if_cma(struct vc4_bo *bo, dma_addr_t *paddr);
 void vc4_bo_dec_usecnt(struct vc4_bo *bo);
 void vc4_bo_add_to_purgeable_pool(struct vc4_bo *bo);
 void vc4_bo_remove_from_purgeable_pool(struct vc4_bo *bo);

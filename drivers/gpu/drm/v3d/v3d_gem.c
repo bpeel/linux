@@ -312,6 +312,41 @@ v3d_lock_bo_reservations(struct v3d_job *job,
 	return 0;
 }
 
+static bool
+get_cma_ref_for_buffer(struct v3d_dev *v3d,
+		       struct v3d_job *job,
+		       struct v3d_bo *bo)
+{
+	struct vc4_dev_hack *vc4_dev = v3d_get_vc4_dev(v3d);
+	dma_addr_t paddr;
+	int ret;
+
+	if (vc4_dev == NULL)
+		return false;
+
+	if (bo->vc4_bo == NULL)
+		return false;
+
+	ret = vc4_dev->bo_inc_usecnt_if_cma(bo->vc4_bo, &paddr);
+
+	switch (ret) {
+	case 0:
+		if (bo->pte_start) {
+			bo->pte_start = 0;
+			v3d_mmu_insert_ptes(bo);
+		}
+		return false;
+	case 1:
+		if (bo->pte_start != paddr) {
+			bo->pte_start = paddr;
+			v3d_mmu_insert_ptes(bo);
+		}
+		return true;
+	default:
+		return false;
+	}
+}
+
 /**
  * v3d_lookup_bos() - Sets up job->bo[] with the GEM objects
  * referenced by the job.
@@ -385,6 +420,10 @@ v3d_lookup_bos(struct drm_device *dev,
 		}
 		drm_gem_object_get(bo);
 		job->bo[i] = bo;
+
+		if (i < 8 * sizeof(job->cma_bo_mask) &&
+		    get_cma_ref_for_buffer(to_v3d_dev(dev), job, to_v3d_bo(bo)))
+			job->cma_bo_mask |= (1 << i);
 	}
 	spin_unlock(&file_priv->table_lock);
 
@@ -400,9 +439,17 @@ v3d_job_free(struct kref *ref)
 	unsigned long index;
 	struct dma_fence *fence;
 	struct v3d_dev *v3d = job->v3d;
+	struct vc4_dev_hack *vc4_dev = v3d_get_vc4_dev(v3d);
 	int i;
 
 	for (i = 0; i < job->bo_count; i++) {
+		if (i < 8 * sizeof(job->cma_bo_mask) &&
+		    (job->cma_bo_mask & (1 << i))) {
+			BUG_ON(vc4_dev == NULL);
+			BUG_ON(to_v3d_bo(job->bo[i])->vc4_bo == NULL);
+			vc4_dev->bo_dec_usecnt(to_v3d_bo(job->bo[i])->vc4_bo);
+		}
+
 		if (job->bo[i])
 			drm_gem_object_put(job->bo[i]);
 	}
@@ -434,6 +481,10 @@ v3d_render_job_free(struct kref *ref)
 	}
 
 	for (i = 0; i < job->base.bo_count; i++) {
+		if (i < 8 * sizeof(job->base.cma_bo_mask) &&
+		    (job->base.cma_bo_mask & (1 << i)))
+			continue;
+
 		bo = to_v3d_bo(job->base.bo[i]);
 
 		if (bo->vc4_bo)

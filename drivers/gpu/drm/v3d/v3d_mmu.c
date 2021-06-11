@@ -86,28 +86,69 @@ int v3d_mmu_set_page_table(struct v3d_dev *v3d)
 	return v3d_mmu_flush_all(v3d);
 }
 
-void v3d_mmu_insert_ptes(struct v3d_bo *bo)
+static void v3d_mmu_insert_ptes_dma_addr(struct v3d_dev *v3d,
+					 struct v3d_bo *bo,
+					 dma_addr_t dma_addr,
+					 u32 page)
+{
+	u32 page_prot = V3D_PTE_WRITEABLE | V3D_PTE_VALID;
+	u32 page_address = dma_addr >> V3D_MMU_PAGE_SHIFT;
+	u32 pte = page_prot | page_address;
+	u32 i;
+
+	BUG_ON(page_address + (PAGE_SIZE >> V3D_MMU_PAGE_SHIFT) >=
+	       BIT(24));
+
+	for (i = 0; i < PAGE_SIZE >> V3D_MMU_PAGE_SHIFT; i++)
+		v3d->pt[page++] = pte + i;
+}
+
+static void v3d_mmu_insert_ptes_shmem(struct v3d_bo *bo)
 {
 	struct drm_gem_shmem_object *shmem_obj = &bo->base;
 	struct v3d_dev *v3d = to_v3d_dev(shmem_obj->base.dev);
 	u32 page = bo->node.start;
-	u32 page_prot = V3D_PTE_WRITEABLE | V3D_PTE_VALID;
 	struct sg_dma_page_iter dma_iter;
 
 	for_each_sgtable_dma_page(shmem_obj->sgt, &dma_iter, 0) {
 		dma_addr_t dma_addr = sg_page_iter_dma_address(&dma_iter);
-		u32 page_address = dma_addr >> V3D_MMU_PAGE_SHIFT;
-		u32 pte = page_prot | page_address;
-		u32 i;
 
-		BUG_ON(page_address + (PAGE_SIZE >> V3D_MMU_PAGE_SHIFT) >=
-		       BIT(24));
-		for (i = 0; i < PAGE_SIZE >> V3D_MMU_PAGE_SHIFT; i++)
-			v3d->pt[page++] = pte + i;
+		v3d_mmu_insert_ptes_dma_addr(v3d, bo, dma_addr, page);
+
+		page += (PAGE_SIZE >> V3D_MMU_PAGE_SHIFT);
 	}
 
 	WARN_ON_ONCE(page - bo->node.start !=
 		     shmem_obj->base.size >> V3D_MMU_PAGE_SHIFT);
+}
+
+static void v3d_mmu_insert_ptes_cma(struct v3d_bo *bo)
+{
+	struct v3d_dev *v3d = to_v3d_dev(bo->base.base.dev);
+	u32 page = bo->node.start;
+	size_t off;
+
+	for (off = 0; off < bo->base.base.size; off += PAGE_SIZE) {
+		v3d_mmu_insert_ptes_dma_addr(v3d,
+					     bo,
+					     off + bo->pte_start,
+					     page);
+
+		page += (PAGE_SIZE >> V3D_MMU_PAGE_SHIFT);
+	}
+
+	WARN_ON_ONCE(page - bo->node.start !=
+		     bo->base.base.size >> V3D_MMU_PAGE_SHIFT);
+}
+
+void v3d_mmu_insert_ptes(struct v3d_bo *bo)
+{
+	struct v3d_dev *v3d = to_v3d_dev(bo->base.base.dev);
+
+	if (bo->pte_start)
+		v3d_mmu_insert_ptes_cma(bo);
+	else
+		v3d_mmu_insert_ptes_shmem(bo);
 
 	if (v3d_mmu_flush_all(v3d))
 		dev_err(v3d->drm.dev, "MMU flush timeout\n");

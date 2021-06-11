@@ -44,6 +44,8 @@ struct v3d_queue_state {
 struct vc4_dev_hack {
 	struct drm_device base;
 	void (* bo_invalidate_shmem)(struct drm_device *dev, void *bo);
+	int (* bo_inc_usecnt_if_cma)(void *bo, dma_addr_t *paddr);
+	void (* bo_dec_usecnt)(void *bo);
 };
 
 struct v3d_dev {
@@ -163,6 +165,12 @@ struct v3d_bo {
 	 */
 	struct list_head unref_head;
 
+	/* Where the PTEs are currently pointing. If this is zero then
+	 * they are pointing into the shmem pages as normal. Otherwise
+	 * they are pointing into CMA memory starting at this address.
+	 */
+	dma_addr_t pte_start;
+
 	void *vc4_bo;
 };
 
@@ -210,6 +218,12 @@ struct v3d_job {
 	 */
 	struct drm_gem_object **bo;
 	u32 bo_count;
+
+	/* HACK: bitmask of the above buffers that were in CMA memory
+	 * at the time of submission. This will have a usecnt on them
+	 * which we need to decrement when the job is freed.
+	 */
+	u64 cma_bo_mask;
 
 	/* Array of struct dma_fence * to block on before submitting this job.
 	 */

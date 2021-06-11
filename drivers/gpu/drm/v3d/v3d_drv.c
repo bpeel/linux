@@ -236,7 +236,7 @@ map_regs(struct v3d_dev *v3d, void __iomem **regs, const char *name)
 	return PTR_ERR_OR_ZERO(*regs);
 }
 
-struct drm_device *v3d_get_vc4_dev(struct v3d_dev *v3d)
+struct vc4_dev_hack *v3d_get_vc4_dev(struct v3d_dev *v3d)
 {
 	struct kset *kset;
 	struct kobject *child;
@@ -272,7 +272,7 @@ struct drm_device *v3d_get_vc4_dev(struct v3d_dev *v3d)
 	if (v3d->vc4_dev)
 		drm_dev_put(vc4);
 	else
-		v3d->vc4_dev = vc4;
+		v3d->vc4_dev = container_of(vc4, struct vc4_dev_hack, base);
 
 	spin_unlock(&v3d->job_lock);
 

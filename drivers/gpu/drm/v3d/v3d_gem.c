@@ -984,5 +984,5 @@ v3d_gem_destroy(struct drm_device *dev)
 			  v3d->pt_paddr);
 
 	if (v3d->vc4_dev)
-		drm_dev_put(v3d->vc4_dev);
+		drm_dev_put(&v3d->vc4_dev->base);
 }

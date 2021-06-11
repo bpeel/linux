@@ -37,6 +37,15 @@ struct v3d_queue_state {
 	u64 emit_seqno;
 };
 
+/* Evil hack to try and match the needed bits of struct vc4_dev in
+ * order to find the bo_invalidate_shmem function without including
+ * any vc4 headers and not caring about linking.
+ */
+struct vc4_dev_hack {
+	struct drm_device base;
+	void (* bo_invalidate_shmem)(struct drm_device *dev, void *bo);
+};
+
 struct v3d_dev {
 	struct drm_device drm;
 
@@ -120,7 +129,7 @@ struct v3d_dev {
 		u32 pages_allocated;
 	} bo_stats;
 
-	struct drm_device *vc4_dev;
+	struct vc4_dev_hack *vc4_dev;
 };
 
 static inline struct v3d_dev *
@@ -309,7 +318,7 @@ static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
 	return min_t(u64, MAX_JIFFY_OFFSET, nsecs_to_jiffies64(n) + 1);
 }
 
-struct drm_device *v3d_get_vc4_dev(struct v3d_dev *v3d);
+struct vc4_dev_hack *v3d_get_vc4_dev(struct v3d_dev *v3d);
 
 /* v3d_bo.c */
 struct drm_gem_object *v3d_create_object(struct drm_device *dev, size_t size);

@@ -148,7 +148,7 @@ free_obj:
 static void *get_vc4_bo(struct v3d_dev *v3d,
 			struct dma_buf *dma_buf)
 {
-	struct drm_device *vc4_dev = v3d_get_vc4_dev(v3d);
+	struct vc4_dev_hack *vc4_dev = v3d_get_vc4_dev(v3d);
 	struct drm_gem_object *obj;
 
 	if (vc4_dev == NULL)
@@ -160,7 +160,7 @@ static void *get_vc4_bo(struct v3d_dev *v3d,
 	 */
 	obj = dma_buf->priv;
 
-	if (obj->dev == vc4_dev)
+	if (obj->dev == &vc4_dev->base)
 		return obj;
 	else
 		return NULL;
@@ -256,20 +256,10 @@ int v3d_get_bo_offset_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
-/* Evil hack to try and match the needed bits of struct vc4_dev in
- * order to find the bo_invalidate_shmem function without including
- * any vc4 headers and not caring about linking.
- */
-struct vc4_dev_hack {
-	struct drm_device base;
-	void (* bo_invalidate_shmem)(struct drm_device *dev, void *bo);
-};
-
 void v3d_bo_invalidate_shmem(struct v3d_dev *v3d,
 			     struct v3d_bo *bo)
 {
-	struct drm_device *vc4_dev;
-	struct vc4_dev_hack *vc4_dev_hack;
+	struct vc4_dev_hack *vc4_dev;
 
 	if (bo->vc4_bo == NULL)
 		return;
@@ -279,7 +269,5 @@ void v3d_bo_invalidate_shmem(struct v3d_dev *v3d,
 	if (vc4_dev == NULL)
 		return;
 
-	vc4_dev_hack = container_of(vc4_dev, struct vc4_dev_hack, base);
-
-	vc4_dev_hack->bo_invalidate_shmem(vc4_dev, bo->vc4_bo);
+	vc4_dev->bo_invalidate_shmem(&vc4_dev->base, bo->vc4_bo);
 }

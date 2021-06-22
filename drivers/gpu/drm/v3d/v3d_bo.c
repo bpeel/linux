@@ -171,20 +171,34 @@ v3d_prime_import_sg_table(struct drm_device *dev,
 			  struct dma_buf_attachment *attach,
 			  struct sg_table *sgt)
 {
+	struct v3d_dev *v3d = to_v3d_dev(dev);
 	struct drm_gem_object *obj;
+	struct v3d_bo *bo;
 	int ret;
 
 	obj = drm_gem_shmem_prime_import_sg_table(dev, attach, sgt);
 	if (IS_ERR(obj))
 		return obj;
 
+	bo = to_v3d_bo(obj);
+
+	bo->vc4_bo = get_vc4_bo(v3d, attach->dmabuf);
+
+	if (bo->vc4_bo) {
+		struct vc4_dev_hack *vc4 = v3d->vc4_dev;
+		dma_addr_t paddr;
+
+		if (vc4->bo_inc_usecnt_if_cma(bo->vc4_bo, &paddr) == 1) {
+			bo->pte_start = paddr;
+			vc4->bo_dec_usecnt(bo->vc4_bo);
+		}
+	}
+
 	ret = v3d_bo_create_finish(obj);
 	if (ret) {
 		drm_gem_shmem_free_object(obj);
 		return ERR_PTR(ret);
 	}
-
-	to_v3d_bo(obj)->vc4_bo = get_vc4_bo(to_v3d_dev(dev), attach->dmabuf);
 
 	return obj;
 }

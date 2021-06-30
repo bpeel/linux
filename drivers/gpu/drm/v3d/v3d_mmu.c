@@ -19,6 +19,7 @@
  */
 
 #include <linux/pm_runtime.h>
+#include <linux/dma-direct.h>
 
 #include "v3d_drv.h"
 #include "v3d_regs.h"
@@ -126,12 +127,14 @@ static void v3d_mmu_insert_ptes_cma(struct v3d_bo *bo)
 {
 	struct v3d_dev *v3d = to_v3d_dev(bo->base.base.dev);
 	u32 page = bo->node.start;
+	dma_addr_t dma_addr = translate_dma_to_phys(v3d->vc4_dev->base.dev,
+						    bo->pte_start);
 	size_t off;
 
 	for (off = 0; off < bo->base.base.size; off += PAGE_SIZE) {
 		v3d_mmu_insert_ptes_dma_addr(v3d,
 					     bo,
-					     off + bo->pte_start,
+					     dma_addr + off,
 					     page);
 
 		page += (PAGE_SIZE >> V3D_MMU_PAGE_SHIFT);
